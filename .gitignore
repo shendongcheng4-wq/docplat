@@ -1,0 +1,43 @@
+# ---- 书籍数据：绝对不能进仓库 ----
+# data/ 里是扫描件的识别结果（页文本、SQLite 库、导出 txt），
+# 版权属于原书作者/出版社，且含个人收藏书目，公开即侵权。
+data/
+_tmp/
+
+# ---- 运行产物 ----
+*.log
+*.db
+*.db-journal
+*.db-wal
+年份*.txt
+
+# ---- 本机配置 ----
+# plat.bat 会读这里的 python 路径（venv 不在项目内时用）
+python_path.txt
+# 模型与 llama.cpp 的实际位置（见 scripts/glm_serve.py）
+scripts/local.conf
+
+# ---- 模型与运行时（体积大，由使用者自行下载）----
+# 只挡根目录和 scripts 下的模型，别写成 `models/` —— 那会把 docplat/models/ 这个
+# Python 包一起挡掉（踩过：首版提交里 models/base.py、glm.py、paddle.py 全丢了）
+/models/
+/scripts/models/
+/scripts/runtime/
+*.gguf
+*.safetensors
+*.bin
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

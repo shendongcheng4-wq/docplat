@@ -1,0 +1,16 @@
+# 统一换行，避免 Windows/Linux 两边 clone 出不同字节
+* text=auto
+
+# plat.bat / 工作台.bat 必须是 CRLF：cmd 按控制台代码页读批处理，
+# 换行或编码一变就会把中文路径读成乱码，`if not exist` 永远不匹配
+*.bat text eol=crlf
+
+*.py  text eol=lf
+*.sh  text eol=lf
+*.json text eol=lf
+*.md  text eol=lf
+
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gguf binary

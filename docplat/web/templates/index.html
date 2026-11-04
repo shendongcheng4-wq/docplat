@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>文档校对工作台 · docplat</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+
+<header>
+  <h1>文档校对工作台</h1>
+  <select id="docsel" title="切换文档"></select>
+  <span class="badge" id="counter">—</span>
+  <div class="spacer"></div>
+  <button class="mini primary" id="runbtn" title="按页序识别所有还没处理的页">开始识别</button>
+  <button class="mini" id="importbtn" title="把磁盘上一个图片文件夹加入待处理">导入</button>
+  <button class="mini" id="exportbtn" title="按页序合并成一份 txt，直接写到 桌面\书籍导出\&lt;丛书&gt;\&lt;卷&gt;.txt">导出全书</button>
+  <span class="badge" id="keyhint">↑↓ 翻页 · Enter 编辑 · Esc 取消</span>
+</header>
+
+<div class="runbar" id="runbar" style="display:none">
+  <span class="rlabel" id="rlabel">识别中…</span>
+  <span class="rtrack"><span class="rfill" id="rfill"></span></span>
+  <span class="retx" id="retx"></span>
+  <button class="mini" id="pausebtn">暂停</button>
+  <button class="mini" id="stopbtn">停止</button>
+</div>
+
+<main>
+  <aside>
+    <div class="tabs" id="tabs">
+      <button data-kind="review" class="on" title="机器判为可疑、还没人核对过的页（只算当前选中的这一卷）">待人工 <b id="n-review">0</b></button>
+      <button data-kind="escalated" title="结构闸门判为分格条目、等着换 PaddleOCR-VL 重跑的页（只算当前选中的这一卷；全书总量见顶部进度条）">升级 <b id="n-escalated">0</b></button>
+      <button data-kind="failed" title="重试到上限仍然没跑通的页（只算当前选中的这一卷）">失败 <b id="n-failed">0</b></button>
+      <button data-kind="lowscore" title="过了闸门但自评分低，抽查看这些（只算当前选中的这一卷）">低分 <b id="n-lowscore">0</b></button>
+      <button data-kind="sample" title="从已识别页里随机抽 20 页，验证闸门本身没漏（只算当前选中的这一卷）">抽检 <b id="n-sample">0</b></button>
+      <button data-kind="all" title="当前选中的这一卷全部页">全部 <b id="n-all">0</b></button>
+    </div>
+    <div class="filter">
+      <input id="q" placeholder="按文件名或页号筛选，回车生效">
+    </div>
+    <div class="list" id="list"></div>
+    <div class="pager">
+      <button id="prevpg" title="上一页">‹</button>
+      <span id="pageinfo">—</span>
+      <button id="nextpg" title="下一页">›</button>
+    </div>
+  </aside>
+
+  <div class="splitter" id="splitter" title="拖动调整左栏宽度"></div>
+
+  <section class="pane">
+    <div class="pane-head">
+      <span id="imginfo">—</span>
+      <div class="spacer"></div>
+      <button class="mini" onclick="zoom()" id="zoombtn">放大</button>
+      <a id="imgopen" class="hint" target="_blank" style="text-decoration:none">原图 ↗</a>
+    </div>
+    <div class="imgwrap" id="imgwrap">
+      <div class="empty">选择左侧任一页开始</div>
+    </div>
+  </section>
+
+  <section class="pane">
+    <div class="pane-head">
+      <span id="state">—</span>
+      <div class="spacer"></div>
+      <button class="mini" id="rerunbtn" onclick="rerunPage()"
+              title="用当前渠道重跑这一页，其他页不受影响">重跑本页</button>
+      <button class="mini" id="verifybtn" onclick="toggleVerified()" style="display:none">✓ 已核对</button>
+      <button class="mini" id="editbtn" onclick="toggleEdit()">编辑</button>
+      <button class="mini primary" id="savebtn" onclick="savePage()" style="display:none">保存</button>
+    </div>
+    <div class="textwrap">
+      <div class="text" id="text"><div class="empty">—</div></div>
+      <textarea id="editor" style="display:none"></textarea>
+    </div>
+    <div class="statbar" id="statbar">—</div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<dialog id="impdlg">
+  <form id="impform">
+    <h2>导入图片文件夹</h2>
+    <p class="hint">填图片所在目录的完整路径，会递归扫描其中的图片并自动判定版面。<br>
+      导出名取自图片文件夹的上一级，外层目录取上上一级。</p>
+    <label for="impsrc">文件夹</label>
+    <input id="impsrc" spellcheck="false" autocomplete="off"
+           placeholder="C:\Users\...\书籍\某氏宗谱\某氏宗谱（卷一）\JPG">
+    <label for="impdoc">文档号 <span class="faint">（留空自动取卷名；同一目录重复导入会复用原文档）</span></label>
+    <input id="impdoc" spellcheck="false" autocomplete="off" placeholder="留空即可">
+    <div class="dlgfoot">
+      <button class="mini" id="impcancel" value="cancel">取消</button>
+      <button class="mini primary" id="impok" value="ok">开始导入</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

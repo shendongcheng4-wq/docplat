@@ -1,0 +1,13 @@
+# 核心依赖：只有 Flask 是必需的（web 工作台 + CLI 都走它）
+# 其余全用标准库（urllib / sqlite3 / zlib）
+Flask>=3.0
+
+# 只用来读图片宽高，写进页表做统计；缺了也能跑（尺寸字段留空）
+Pillow>=10.0
+
+# ---- 可选 ----
+# vl 通道（表格 / 世系表兜底重读）：
+#   pip install paddleocr paddlepaddle-gpu
+#
+# 评测脚本 tools/eval_*.py、tools/make_sheet.py：
+#   pip install opencv-python numpy
