@@ -7,6 +7,8 @@
   python -m docplat report  --doc zu
   python -m docplat queue   --doc zu  --kind review
   python -m docplat export  --doc zu                  # 桌面/书籍导出/丛书/卷.txt
+  python -m docplat bleed   --doc zu                  # 找出「空白页的背面透印」，只报告
+  python -m docplat bleed   --doc zu --apply          # 清成空白（原文进 _quarantine）
   python -m docplat setsrc  --doc zu  --src "D:\\...\\卷\\JPG"
   python -m docplat layout-check --doc zu
 """
@@ -77,6 +79,14 @@ def cmd_export(a):
     p = pipeline.export(a.doc, a.out, src=a.src, root=a.root,
                         ext="md" if a.md else "", report=True)
     print(f"已导出 {p}  ({p.stat().st_size} 字节)")
+
+
+def cmd_bleed(a):
+    r = pipeline.bleed_scan(a.doc, apply=a.apply, include_review=a.all,
+                            quiet=False)
+    if not a.apply and r["hits"]:
+        print("（只报告，未改动。加 --apply 才清空并备份）")
+    return 0
 
 
 def cmd_setsrc(a):
@@ -166,6 +176,15 @@ def main(argv=None):
     p.add_argument("--out", default="", help="直接指定文件名（相对则落在推导出的目录里）")
     p.add_argument("--md", action="store_true", help="导出 markdown（保留表格管道）而不是 txt")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("bleed",
+                       help="找出「本来是空白、只是纸太薄透了背面」的页，清成空白")
+    p.add_argument("--doc", required=True)
+    p.add_argument("--apply", action="store_true",
+                   help="真的清空（原文备份到 data/_quarantine）；不加只报告")
+    p.add_argument("--all", action="store_true",
+                   help="连 review/escalated 的页一起清（默认只动 done）")
+    p.set_defaults(func=cmd_bleed)
 
     p = sub.add_parser("setsrc", help="查看/修正文档的来源目录（决定导出路径与文件名）")
     p.add_argument("--doc", required=True)

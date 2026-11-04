@@ -613,6 +613,97 @@ def layout_check(doc_id: str):
     return hit
 
 
+def _page_text(pg) -> str:
+    p = pg.get("out_path")
+    if p and Path(p).exists():
+        try:
+            return Path(p).read_text(encoding="utf-8")
+        except OSError:
+            return ""
+    return ""
+
+
+def bleed_flags(doc_id: str, pages=None) -> dict:
+    """全书逐页判「原本空白、只是背面透印」。返回 {页号: True/False}。
+
+    判据在 docplat/bleed.py 里 —— 核心是「这页有没有正印的深墨」，
+    与模型读出什么无关（模型对透印页会读成乱码，也会干脆编一段）。
+    读图失败或拿不准的页一律给 False：宁可漏删，不能把真正文误当空白。
+    """
+    from . import bleed
+
+    pages = pages or store.queue(doc_id, "all", limit=10 ** 9)
+    rows = [(pg["page_no"], pg["src_path"], _page_text(pg)) for pg in pages]
+    return {pn: (v[0] is True) for pn, v in bleed.scan(rows).items()}
+
+
+def bleed_scan(doc_id: str, apply: bool = False, include_review: bool = False,
+               quiet: bool = False) -> dict:
+    """把「本来是空白、只是纸太薄透了背面」的页结清为空白页。
+
+    为什么要单独做这一步：这类页的**图像**上有字（透印），模型会读成乱码
+    （`业业业业`、`址 址 址`）甚至编造内容，于是它一路绿灯进正文；
+    而它其实是空白页，应该像空白页一样不出。判据见 docplat/bleed.py。
+
+    apply=False 只报告（默认，安全）；apply=True 才清空正文文件、改库，
+    原文备份到 data/_quarantine/<文档号>/pNNN.md，删错了能还原。
+
+    只动 status='done' 的页；include_review=True 时连 review/escalated 一起
+    （那些页本来就等人看，若图像上没有正印深墨，清掉正好省人工）。
+    已人工确认过的页（verify）永远不动。
+    """
+    from . import bleed
+
+    store.init()
+    pages = store.queue(doc_id, "all", limit=10 ** 9)
+    pages.sort(key=lambda r: r["page_no"])
+    try:
+        verified = store.verified_set(doc_id)
+    except Exception:
+        verified = set()
+    rows = [(pg["page_no"], pg["src_path"], _page_text(pg)) for pg in pages]
+    res = bleed.scan(rows)
+    todo_ok = {"done"} | ({"review", "escalated"} if include_review else set())
+
+    hits, unsure = [], []
+    for pg in pages:
+        v, why = res.get(pg["page_no"], (None, ""))
+        if v is None:
+            unsure.append((pg, why))
+            continue
+        if not v or pg["status"] not in todo_ok or pg["hash"] in verified:
+            continue
+        hits.append((pg, why))
+
+    if not quiet:
+        print(f"[{doc_id}] 判为透印/空白 {len(hits)} 页，拿不准 {len(unsure)} 页")
+        for pg, why in hits[:40]:
+            n = len(re.sub(r"\s", "", _page_text(pg)))
+            head = re.sub(r"\s", " ", _page_text(pg)).strip()[:30]
+            print(f"   p{pg['page_no']:<4d} 原 {n:>5d} 字  {why:<34s} {head!r}")
+        if len(hits) > 40:
+            print(f"   …另有 {len(hits) - 40} 页")
+
+    if not apply:
+        return {"hits": [pg["page_no"] for pg, _ in hits], "applied": 0}
+
+    q = C.DATA / "_quarantine" / doc_id
+    q.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for pg, why in hits:
+        p = pg.get("out_path")
+        if p and Path(p).exists() and Path(p).stat().st_size > 0:
+            (q / f"p{pg['page_no']:03d}.md").write_bytes(Path(p).read_bytes())
+            moved += 1
+        if p:
+            Path(p).write_text("", encoding="utf-8")
+        store.set_page(doc_id, pg["hash"], status="done", chars=0, cover=None,
+                       err=f"空白页（{why}）")
+    if not quiet:
+        print(f"   已清空 {len(hits)} 页，备份 {moved} 个文件 → {q}")
+    return {"hits": [pg["page_no"] for pg, _ in hits], "applied": len(hits)}
+
+
 def book_of(src_dir) -> tuple:
     """由「导入目录」推出 (丛书名, 卷名)。
 
@@ -683,8 +774,16 @@ def export(doc_id: str, out_name: str = "", src: str = "", root=None,
 
     pages = store.queue(doc_id, "all", limit=10 ** 9)
     pages.sort(key=lambda r: r["page_no"])
+    # 透印页：这页原本空白，纸太薄把另一面（紧邻页）的字透了过来，
+    # 而且左右镜像 —— 模型只能读成乱码，或者干脆编一段。它不算正文。
+    # 判据见 bleed.py：看「这页有没有正印的深墨」，不看文本像不像话。
+    # 这里只跳过、不改库；要清库跑 `plat.bat bleed --doc ... --apply`。
+    ink_blank = bleed_flags(doc_id, pages)
     buf, used, empty, img = [], 0, 0, 0
     for pg in pages:
+        if ink_blank.get(pg["page_no"]):
+            empty += 1
+            continue
         raw, t = "", ""
         p = pg.get("out_path")
         if p and Path(p).exists():
