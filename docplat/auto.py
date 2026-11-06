@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -185,6 +186,108 @@ def glm_up(timeout: float = 2) -> bool:
         return False
 
 
+# llama-server 命令行里的模型标记：只认挂着 GLM 的那个进程，
+# 别把机器上别的 llama 也杀了（同一台机器可能还有别的模型在服务）。
+GLM_TAG = "glm-ocr"
+
+# 「同一时刻只准一个人起 GLM」的锁文件。写成模块变量是为了让自检能换成临时路径。
+GLM_LOCK = C.DATA / "_glm_start.lock"
+
+
+def glm_pids() -> list:
+    """本机在跑的 GLM llama-server，按启动时间从早到晚。
+
+    psutil 没装就返回空 —— 那只是没法查重，不影响起服务本身。
+    """
+    try:
+        import psutil
+    except ImportError:
+        return []
+    rows = []
+    for p in psutil.process_iter(["pid", "name", "create_time", "cmdline"]):
+        try:
+            if (p.info["name"] or "").lower() != "llama-server.exe":
+                continue
+            if GLM_TAG not in " ".join(p.info["cmdline"] or []).lower():
+                continue
+            rows.append((p.info["create_time"], p.info["pid"]))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return [pid for _, pid in sorted(rows)]
+
+
+def glm_prune(keep: int = 1) -> list:
+    """杀掉多余的 GLM 实例，只留最早的 keep 个；返回被杀掉的 PID。
+
+    为什么需要这一步：glm_start 是「先查 glm_up() 再 Popen」，两步之间不是原子的。
+    2026-11-06 09:02 工作台重启时两个调用方同时进来（页面加载的自动拉起 + 手动点
+    「开始识别」），各起了一个 llama-server，相隔 1 秒，各吃 4.5GB 显存。
+    表面上一切正常（GLM 能用、跑批也不报错），但后面 Paddle 一加载就 OOM，而且
+    两个实例都在 LISTENING 8081，请求落到哪个看运气。
+    保留最早的那个：它通常已经绑住端口、模型也热了。
+    """
+    pids = glm_pids()
+    if len(pids) <= keep:
+        return []
+    try:
+        import psutil
+    except ImportError:
+        return []
+    killed = []
+    for pid in pids[keep:]:
+        try:
+            psutil.Process(pid).kill()
+            killed.append(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return killed
+
+
+@contextlib.contextmanager
+def _spawn_lock(wait: float = 300):
+    """跨进程的「同一时刻只准一个人起 GLM」锁。
+
+    用锁文件当互斥量（O_CREAT|O_EXCL 在 Windows 上也是原子的），不用 threading.Lock：
+    起 GLM 的可能是工作台进程，也可能是命令行跑批的进程，两拨人不开在同一个进程里。
+
+    yield True  = 我拿到锁，我去起；
+    yield False = 等的时候别人已经起好了，直接收工，不用陪它把 240 秒等完。
+    """
+    lock = GLM_LOCK
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    while True:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{os.getpid()} {time.time():.0f}".encode())
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:                                   # 持有者被杀的残留锁，过期作废
+                stale = time.time() - lock.stat().st_mtime > wait
+            except OSError:
+                stale = False
+            if stale:
+                try:
+                    lock.unlink()
+                except OSError:
+                    pass
+                continue
+            if glm_up(1):                          # 别人起好了，没必要再抢
+                yield False
+                return
+            if time.time() - t0 > wait:
+                raise TimeoutError(f"等 GLM 启动锁超时（{lock}），删掉它再试")
+            time.sleep(1)
+    try:
+        yield True
+    finally:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
 def glm_stop(quiet=False):
     if not GLM_SERVE.exists():
         raise FileNotFoundError(f"找不到 GLM 启动脚本：{GLM_SERVE}")
@@ -200,23 +303,43 @@ def glm_stop(quiet=False):
 
 
 def glm_start(wait: int = 240, quiet=False):
+    killed = glm_prune()                # 先清掉上次遗留的重复实例
+    if killed and not quiet:
+        print(f"  已清掉多余的 GLM 实例：{killed}")
     if glm_up():
         if not quiet:
             print("  GLM 服务已在线")
         return
     if not GLM_SERVE.exists():
         raise FileNotFoundError(f"找不到 GLM 启动脚本：{GLM_SERVE}")
-    flags = 0x08000000 if os.name == "nt" else 0       # CREATE_NO_WINDOW
-    subprocess.Popen([sys.executable, str(GLM_SERVE)], cwd=str(GLM_SERVE.parent),
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=flags)
-    t0 = time.time()
-    while time.time() - t0 < wait:
-        if glm_up(2):
+    # 「先查再起」不是原子的，两个调用方同时进来会各起一个 llama-server。
+    # 用跨进程锁把这一段串起来，等锁的人看到服务已就绪就直接返回。
+    with _spawn_lock(wait + 60) as mine:
+        if not mine:
             if not quiet:
-                print(f"  GLM 服务已就绪（{time.time() - t0:.0f}s）")
+                print("  GLM 服务已就绪（由别的调用拉起）")
             return
-        time.sleep(2)
+        if glm_up():                   # 拿到锁的这一刻可能刚好被别人起好了
+            if not quiet:
+                print("  GLM 服务已在线")
+            return
+        # DETACHED_PROCESS(0x8) 不能省：只加 CREATE_NO_WINDOW 的话，GLM 仍是调用方的
+        # 子进程，调用方（一次性的命令行、工作台重启、工具里起的临时 shell）一退，
+        # Windows 会把整棵进程树收走 —— 表现为「跑到一半 llama-server 突然没了，
+        # 跑批子进程跟着静默消失，run.log 卡在某页、没有 traceback」（2026-11-05 就是这样）。
+        # 脱离之后 GLM 自己活，谁起的都不影响它。
+        flags = (0x08000000 | 0x00000008) if os.name == "nt" else 0
+        subprocess.Popen([sys.executable, str(GLM_SERVE)], cwd=str(GLM_SERVE.parent),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, close_fds=True,
+                         creationflags=flags)
+        t0 = time.time()
+        while time.time() - t0 < wait:
+            if glm_up(2):
+                if not quiet:
+                    print(f"  GLM 服务已就绪（{time.time() - t0:.0f}s）")
+                return
+            time.sleep(2)
     raise RuntimeError(f"GLM 服务 {wait}s 内没起来，检查 {GLM_SERVE}")
 
 

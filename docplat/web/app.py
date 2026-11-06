@@ -18,7 +18,7 @@ from flask import (Flask, abort, jsonify, render_template, request, send_file,
 
 from .. import config as C
 from .. import auto as _auto
-from .. import pipeline, store
+from .. import pipeline, store, preflight
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["JSON_AS_ASCII"] = False
@@ -52,11 +52,25 @@ def _read_text(pg: dict) -> str:
 
 def _read_render(pg: dict) -> str:
     """给人看的版本：HTML 表格摊成分行文字（复核时看格子不如看行）。"""
+    from .. import config as C
     from ..legacy import render_text
-    return render_text(_read_text(pg), "flat")
+    # 竖排族谱（config.is_vertical）表格按列读、从右往左 —— 否则一页世系图
+    # 会摊成「次子 平長子 次子 …」这种横拼的行，列序整个反了
+    return render_text(_read_text(pg), "flat",
+                       vertical=C.is_vertical(pg.get("doc_id")))
 
 
-def _brief(pg: dict, verified: dict) -> dict:
+def _read_display(pg: dict, render: str) -> str:
+    """页面只读视图：跟导出的 txt 同一套排版（段首缩进、段间不空行）。
+
+    校对时看到的形态要和交付的 txt 一致，否则「页面上顶格、导出缩进两边对不上」。
+    编辑态仍给 render 原文 —— 缩进是展示层的事，不能写回数据库。
+    """
+    from ..legacy import book_layout
+    return book_layout(render)
+
+
+def _brief(pg: dict, verified: dict, notes: dict | None = None) -> dict:
     """队列里一行需要的信息，不包含正文（正文按页单独取）。"""
     src = Path(pg["src_path"]).name
     v = verified.get(pg["hash"])
@@ -73,6 +87,8 @@ def _brief(pg: dict, verified: dict) -> dict:
         "score": pg["score"],
         "err": pg["err"] or "",
         "verified": v["verdict"] if v else "",
+        # 备注只带内容，前端用 title 显示；不占版面
+        "note": (notes or {}).get(pg["hash"], ""),
     }
 
 
@@ -80,7 +96,15 @@ def _brief(pg: dict, verified: dict) -> dict:
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    # 静态资源带版本号：/static/* 给了 max_age=3600，改了 app.js 之后不光刷
+    # 浏览器直接拿缓存里的旧脚本（改了半天界面没变）。版本号取两个文件的最新
+    # mtime，改过就换 URL，浏览器自然会重新取。
+    static = Path(__file__).resolve().parent / "static"
+    try:
+        ver = int(max((static / n).stat().st_mtime for n in ("app.js", "app.css")))
+    except OSError:
+        ver = 0
+    return render_template("index.html", asset_ver=ver)
 
 
 # ---------- API ----------
@@ -130,9 +154,25 @@ def api_queue():
                for r in c.execute(
                    "SELECT hash, verdict, created FROM verifications WHERE doc_id=?",
                    (doc,))}
+    notes = store.note_map(doc)
     return jsonify({"doc": doc, "kind": kind, "total": total,
                     "offset": offset, "limit": limit,
-                    "pages": [_brief(r, ver) for r in rows]})
+                    "pages": [_brief(r, ver, notes) for r in rows]})
+
+
+@app.get("/api/search")
+def api_search():
+    """全书正文搜索（不是文件名/页号筛选）。
+
+    以前想找「某句话在第几页」只能一页页点开看。正文都在本地 md 里，
+    几百页扫一遍是百毫秒级，没有理由不做。
+    """
+    doc = _doc()
+    q = request.args.get("q", "").strip()
+    if len(q) < 1:
+        return jsonify({"doc": doc, "total": 0, "pages": [], "terms": []})
+    limit = min(int(request.args.get("limit", 200)), 500)
+    return jsonify({"doc": doc, **pipeline.search_text(doc, q, limit)})
 
 
 @app.get("/api/page")
@@ -141,10 +181,24 @@ def api_page():
     h = request.args.get("hash", "")
     pg = _page_or_404(doc, h)
     v = store.verification_of(doc, h)
+    text = _read_text(pg)
+    render = _read_render(pg)
+    note = store.get_note(doc, h)
+
+    # 相邻页：跨页接续的句子要对照上一页末尾，族谱/扫描歪页特别需要。
+    # 按 page_no 查而不是按当前列表的下标 —— 队列里这一批页是不连续的。
+    prev = store.neighbor(doc, pg["page_no"], -1)
+    nxt = store.neighbor(doc, pg["page_no"], +1)
+
+    def _nb(x, tail):
+        return ({"page_no": x["page_no"], "hash": x["hash"],
+                 "peek": pipeline.page_peek(x, tail)} if x else None)
+
     return jsonify({
-        **_brief(pg, {h: v} if v else {}),
-        "text": _read_text(pg),
-        "render": _read_render(pg),
+        **_brief(pg, {h: v} if v else {}, {h: note.get("body", "")}),
+        "text": text,
+        "render": render,
+        "display": _read_display(pg, render),
         "width": pg["width"], "height": pg["height"],
         "cover": pg["cover"],
         "status": pg["status"],
@@ -152,7 +206,51 @@ def api_page():
         "verified_note": v.get("note", ""),
         "verified_verdict": v.get("verdict", ""),
         "retries": pg["retries"],
+        "note_at": note.get("updated", ""),
+        "prev": _nb(prev, True),
+        "next": _nb(nxt, False),
     })
+
+
+@app.get("/api/history")
+def api_history():
+    """这一页被改过几次、每份是什么样。没有它，改错一次就找不回来。"""
+    doc = _doc()
+    h = request.args.get("hash", "")
+    _page_or_404(doc, h)
+    return jsonify({"doc": doc, "hash": h,
+                    "versions": pipeline.undo_history(doc, h)})
+
+
+@app.post("/api/restore")
+def api_restore():
+    d = request.get_json(force=True) or {}
+    doc, h = _doc(d.get("doc", "")), d.get("hash", "")
+    if not h:
+        abort(400, "缺少 hash")
+    try:
+        n = pipeline.undo_restore(doc, h, d.get("name", ""))
+    except KeyError as e:
+        abort(404, str(e))
+    except ValueError as e:
+        abort(400, str(e))
+    return jsonify({"ok": True, "chars": n})
+
+
+@app.post("/api/note")
+def api_note():
+    """页级备注：随时能写，不改变这一页的核对状态。
+
+    以前备注只能塞进 verifications.note，那等于「写备注 = 已核对」，
+    会把待人工的页悄悄移出队列，所以单独开一张表。
+    """
+    d = request.get_json(force=True) or {}
+    doc, h = _doc(d.get("doc", "")), d.get("hash", "")
+    if not h:
+        abort(400, "缺少 hash")
+    _page_or_404(doc, h)
+    store.set_note(doc, h, d.get("note", ""))
+    return jsonify({"ok": True, "note": store.get_note(doc, h).get("body", "")})
 
 
 @app.post("/api/page")
@@ -182,23 +280,85 @@ def api_verify():
     return jsonify({"ok": True, "counts": store.queue_counts(doc)})
 
 
+@app.post("/api/batch")
+def api_batch():
+    """一次处理多页：批量核对 / 撤销 / 判为空白页 / 转 VL。
+
+    为什么要有它：待人工最多的一卷有 43 页，一页一次点击、还要等自动跳下一条，
+    核完一本书就是几百次点击。勾选 + 一次提交把这件事变成两三下。
+
+    「转 VL」（2026-11-06 用户要的）：待人工里 GLM 根本读不了的页（目录点线
+    死循环、图版当表格拆），勾一批直接排进 VL 队列 —— 之前只能一页页去命令行。
+    """
+    d = request.get_json(force=True) or {}
+    doc = _doc(d.get("doc", ""))
+    action = d.get("action", "")
+    hashes = [h for h in (d.get("hashes") or []) if isinstance(h, str) and h][:2000]
+    if action not in ("verify", "unverify", "blank", "to_vl"):
+        abort(400, f"未知批量操作：{action}")
+    if not hashes:
+        abort(400, "没有勾选任何页")
+    try:
+        r = pipeline.batch_action(doc, hashes, action)
+    except ValueError as e:
+        abort(400, str(e))
+    return jsonify({"ok": True, **r, "counts": store.queue_counts(doc)})
+
+
 @app.post("/api/rerun")
 def api_rerun():
-    """重跑单页。只支持走 HTTP 的 GLM 通道 —— PaddleOCR-VL 要占满显存，
-    在 Web 进程里加载它会把整台机器拖住，那种情况请用命令行分批跑。
+    """重跑单页。可选换模型（2026-11-06 用户要的：待人工的页重跑要能换模型）。
+
+    · channel=glm（或留空 = 这一页原来的通道）：当场在这个进程里跑，几秒到几十秒。
+    · channel=vl：**不当场跑**。Paddle 要占满显存（~11GB），在 Web 进程里加载它
+      会把整台机器拖住；这里只把这页排进 VL 队列（status=pending、channel=vl），
+      前端提示「先停掉 GLM 服务，再点顶部『换 VL 重跑 N』」。
     """
     d = request.get_json(force=True) or {}
     doc, h = _doc(d.get("doc", "")), d.get("hash", "")
     pg = _page_or_404(doc, h)
-    if pg.get("channel") == "vl":
-        return jsonify({"error": "这一页规划给 PaddleOCR-VL，需占满显存；"
-                                 "请停掉 GLM 服务后命令行跑 plat.bat run --doc "
-                                 f"{doc} --channel vl"}), 409
+    want = (d.get("channel") or "").strip()
+    if want and want not in ("glm", "vl"):
+        return jsonify({"error": f"不支持的通道：{want}"}), 400
+    ch = want or pg.get("channel") or pipeline.route_of(pg.get("layout") or "")
+    if ch == "vl":
+        n = store.to_channel(doc, [h], "vl", why="工作台「重跑」选了 PaddleOCR-VL")
+        return jsonify({"ok": True, "queued": "vl", "pages": n,
+                        "counts": store.queue_counts(doc)})
     try:
-        st = pipeline.rerun_one(doc, h)
+        st = pipeline.rerun_one(doc, h, ch)
     except Exception as e:                      # 模型服务没起等
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
-    return jsonify({"ok": True, "stat": st})
+    return jsonify({"ok": True, "stat": st, "channel": ch})
+
+
+@app.get("/api/preflight")
+def api_preflight():
+    """导出体检：先算清楚「这一导，会缺什么」。
+
+    为什么需要：`pipeline.export` 对还没跑出结果的页是**静默跳过**的
+    （out_path 不存在 → 当成没字 → 不计入正文），而 txt 里不写页数，
+    少了几页肉眼看不出来。商业史料 316 页里有 1 页没跑，导出来就是 315 页
+    的内容，界面上却只显示「已导出」。
+
+    三档口径在 `docplat/preflight.py`：`miss` 无结果、`zero` 有文件但 0 字且
+    没有空白页判定、`blank` 0 字但流程已判空白页。**只有前两档拦人**，
+    否则族谱里几十页真空白会让每次导出都弹窗（2026-11-05 用户反馈）。
+    """
+    doc = _doc()
+    store.init()
+    pages = store.queue(doc, "all", limit=10 ** 9)
+    got = preflight.classify(pages, store.verified_set(doc))
+    counts = store.queue_counts(doc)
+    return jsonify({
+        "doc": doc,
+        "total": len(pages),
+        "miss": got["miss"],
+        "zero": got["zero"],
+        "blank": got["blank"],
+        "blocking": preflight.blocking(got),
+        "counts": counts,
+    })
 
 
 @app.get("/api/export")
@@ -211,6 +371,18 @@ def api_export():
     doc = _doc()
     try:
         p = pipeline.export(doc)
+    except PermissionError as e:
+        # 目录建不出来是最常见的一种「导出失败」，而原始报错只是一句
+        # `WinError 5 拒绝访问`，看不出是权限问题还是代码问题（2026-11-06）。
+        # 典型诱因：桌面目录的 ACL 里有一条显式的「本账户 RX」排在继承的
+        # 完全控制之前，导致能读不能建 —— 修法见这条提示。
+        return jsonify({"error": (
+            f"没有权限写导出目录（{e}）。\n"
+            "桌面\\书籍导出 被限制了“新建文件/文件夹”权限时会这样。\n"
+            "修复：在文件资源管理器里右键该文件夹 → 属性 → 安全 → 高级，"
+            "把当前账户的权限改为“完全控制”，或执行：\n"
+            '  icacls "%USERPROFILE%\\Desktop" /grant "Administrator:(OI)(CI)(F)"'
+        )}), 500
     except Exception as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
     return jsonify({"ok": True, "path": str(p), "size": p.stat().st_size})
@@ -406,14 +578,78 @@ def static_file(fn):
 
 @app.get("/api/health")
 def health():
-    """给命令行/脚本探活用。"""
+    """探活 + 服务灯。
+
+    `glm` 是识别服务（127.0.0.1:8081）当前通不通：以前只能靠点「开始识别」
+    等它自动拉起、或者去翻日志才知道它死了。查询参数 ?glm=0 可跳过这次探测
+    （脚本轮询时不必每次都等那 0.6 秒超时）。
+    """
     try:
         store.init()
         docs = store.list_docs()
-        return jsonify({"ok": True, "docs": len(docs),
-                        "pages": sum(d["pages"] for d in docs)})
+        out = {"ok": True, "docs": len(docs),
+               "pages": sum(d["pages"] for d in docs)}
+        if request.args.get("glm", "1") != "0":
+            out["glm"] = _glm_up(0.6)
+            out["glm_base"] = C.GLM_BASE
+        return jsonify(out)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/api/glm/start")
+def api_glm_start():
+    """把识别服务拉起来（顶栏那盏灯红了时用）。
+
+    为什么要在服务进程里做：GLM 必须挂在**常驻**的父进程下。
+    从一次性的命令行/脚本里起，调用方一退，Windows 就把整棵进程树收掉 ——
+    llama-server 消失、正在跑的批跟着静默中断（2026-11-05 就是这么断的）。
+    serve 是常驻的，它起的子进程才活得久。
+    """
+    if _glm_up(0.6):
+        return jsonify({"ok": True, "already": True, "glm": True})
+    try:
+        _auto.glm_start(wait=180, quiet=True)
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+    up = _glm_up(5)
+    if not up:
+        return jsonify({"error": "拉起后仍连不上 127.0.0.1:8081，"
+                                 "看 scripts/glm_serve.py 的输出"}), 500
+    return jsonify({"ok": True, "already": False, "glm": True})
+
+
+@app.post("/api/glm/stop")
+def api_glm_stop():
+    """停掉识别服务，把显存让给 PaddleOCR-VL。
+
+    为什么需要：换 VL 跑必须先腾显存（GLM 4.5GB + Paddle 14.8GB，16GB 卡装不下
+    两个），以前这条只能在命令行干 —— 用户在工作台里点了「转 VL」，还得自己去
+    找命令行停服，等于把最麻烦的一步留给人。这里替他把这一步做了（等显存真的
+    还回来才返回，约 30 秒上限）。
+    """
+    if not _glm_up(0.6):
+        return jsonify({"ok": True, "already": True})
+    try:
+        _auto.glm_stop(quiet=True)
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+    return jsonify({"ok": True, "glm": _glm_up(1.0)})
+
+
+@app.get("/api/log")
+def api_log():
+    """识别日志尾部。跑批出错时不用再去翻文件。"""
+    n = max(1, min(int(request.args.get("lines", 120)), 800))
+    for p in (C.DATA / "run.log", C.ROOT / "_serve_run.log"):
+        try:
+            if not p.is_file() or p.stat().st_size == 0:
+                continue
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        return jsonify({"path": str(p), "lines": lines[-n:]})
+    return jsonify({"path": "", "lines": []})
 
 
 def serve(host="127.0.0.1", port=7788, debug=False):

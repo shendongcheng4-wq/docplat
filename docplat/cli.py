@@ -36,6 +36,9 @@ def cmd_run(a):
     r = pipeline.run(a.doc, a.channel, a.limit, quiet=a.quiet)
     print(f"\n完成 {r['pages']} 页  正常 {r['done']}  待复核 {r['review']}  "
           f"升级 {r.get('escalate', 0)}  失败 {r['failed']}  用时 {r['sec']}s")
+    if r.get("slow"):
+        # 单独一行：不然「用时 2470s」会被误读成模型慢
+        print(f"  其中 {r['slow']} 页单页严重超时（服务侧干等，不是模型慢）")
 
 
 def cmd_retext(a):

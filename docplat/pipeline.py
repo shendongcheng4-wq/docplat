@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from . import config as C
-from . import store
+from . import imgio, store, toc
 from .legacy import redundancy_of, vl_only_fragments
 from .models import get as get_engine
 from .models.base import EngineError
@@ -67,12 +67,8 @@ def route_of(layout: str) -> str:
 
 
 def _dims(p: Path):
-    try:
-        from PIL import Image
-        with Image.open(p) as im:
-            return im.size
-    except Exception:
-        return (None, None)
+    # 倒置/侧躺的扫描件按显示方向记宽高（90/270 度会交换），否则版式判断拿到反的尺寸
+    return imgio.dims(p)
 
 
 # ---------- 入库 ----------
@@ -229,9 +225,123 @@ def _wait_if_paused(quiet: bool = False, i: int = 0, n: int = 0):
     return True
 
 
+_PIPE_ONLY = re.compile(r"^[\s|｜]+$")
+_DOTS_RUN = re.compile(r"[…\.．·]{2,}")
+
+
+def _dots_degenerate(text: str, min_run: int = 40) -> bool:
+    """输出是不是「点线型退化」—— 目录页读到引导符后一路吐省略号。
+
+    水西颂 p0014：32596 字里 3 万字是一串「…」，条目只开到「战略部署的历史贡献」
+    就断了。质量闸门靠压缩冗余抓到了它（0.99），但抓到了也没用：光重读一遍
+    结果一样。真正的区别在**提示词**，不在图（见 config.GLM_TOC_PROMPT）。
+
+    判据取「最长连续点号串 ≥ 40」：正常目录页每行也就 3~30 个点，模型死循环
+    时是一条几百上千个点的长串，两者差一个数量级，不会误判。
+    """
+    if not text:
+        return False
+    return max((len(m.group()) for m in _DOTS_RUN.finditer(text)), default=0) >= min_run
+
+
+def _pipe_degenerate(text: str, min_lines: int = 50) -> bool:
+    """输出是不是退化成了「一整片空单元格」—— 整行只有竖线、没有字。
+
+    先进性教育活动 p192 就是这样：标题、表头、第一行都读对了，之后一路吐
+    `|`，4142 个字符里 4058 个是竖线、4071 行每行一个字。质量闸门（压缩冗余）
+    抓不到它 —— 每行都不一样，只是都是空的；结构闸门倒是抓到了（判成分格条目
+    页升级 vl），但那等于把一页本来能读的表推给 Paddle。
+
+    判据是「整行只有竖线/空白的行 ≥ 50」：正常表格的行里总有字，一行都碰不到。
+    """
+    n = 0
+    for ln in (text or "").split("\n"):
+        if _PIPE_ONLY.match(ln):
+            n += 1
+            if n >= min_lines:
+                return True
+    return False
+
+
+def _reread_degenerate(eng, img: Path, layout: str, key: str, rec, v,
+                       stat: dict, quiet: bool = False, tag: str = ""):
+    """GLM 输出退化时重读一页，返回 (rec, v)。三招，按「可靠度」从高到低：
+
+    1) 目录页点线（p9/p10、水西颂 p0014）：抹掉点线再读。GLM 读到第一个「……」
+       就停不下来，一路吐到 6000 token 上限（3.2 万字、冗余 1.00）。
+       抹点线是确定性解法：p0014 从 32596 字死循环 → 578 字 DONE，24 条点线全抹净、
+       字一个不错。实现见 toc.find_dots（2026-11-06 改成「定带 + 只抹带内小连通域」）。
+    2) 目录提示词（`GLM_TOC_PROMPT`）：不动图，只换问法。同一张原图有时 3.4 秒出
+       721 字，但**不稳定**（连跑 3 次只中 1 次），所以排在抹图之后当兜底。
+    3) 复杂表格（p192）：换 `GLM_TABLE_PROMPT` 再读。合并单元格 + 竖排表头会把
+       GLM 带进「吐空单元格」的坑；换成一句中文表格指令，它反而吐完整 HTML 表。
+
+    判定退化的口径：输出是一片空单元格，或者质量闸门判了「重复生成」。
+    接受重读结果的门槛是「判 DONE **且** 不再退化」，否则保留原结果不动。
+    """
+    if not (_pipe_degenerate(rec.text)
+            or (v.status != DONE and "重复生成" in (v.reason or ""))):
+        return rec, v
+
+    def _try(target, prompt: str = ""):
+        try:
+            r = eng.recognize(target, hint=layout, prompt=prompt)
+        except Exception:
+            return None, None
+        return r, evaluate(r, layout)
+
+    def _ok(r, vv):
+        return (vv is not None and vv.status == DONE
+                and not _pipe_degenerate(r.text))
+
+    def _take(r, vv, what: str):
+        if not quiet:
+            print(f"  {tag}{img.name}  ⤺ {what}：{rec.chars} → {r.chars} 字")
+        return r, Verdict(vv.status, vv.score, f"正常（{what}）")
+
+    # ---- 1) 抹掉目录点线（确定性的一招，先走）----
+    clean = toc.strip_dot_leaders(img, C.DATA / "_toc", name=key)
+    if clean is not None:
+        r1, v1 = _try(clean)
+        if _ok(r1, v1):
+            stat["toc"] += 1
+            return _take(r1, v1, "已抹目录点线重读")
+
+    # ---- 2) 换目录提示词（不动图，兜抹图的漏）----
+    if _dots_degenerate(rec.text):
+        r2, v2 = _try(img, C.GLM_TOC_PROMPT)
+        if _ok(r2, v2):
+            stat["toc_prompt"] += 1
+            return _take(r2, v2, "改用目录提示词重读")
+
+    # ---- 3) 换表格提示词 ----
+    r3, v3 = _try(img, C.GLM_TABLE_PROMPT)
+    if _ok(r3, v3):
+        stat["table"] += 1
+        return _take(r3, v3, "改用表格提示词重读")
+
+    return rec, v
+
+
+def _slow_note(sec: float, chars: int) -> str:
+    """这一页是不是「干等」，而不是「字多所以慢」。
+
+    单页耗时 ≈ 1.6s 预填充 + 0.002s/字（2026-11-05 按 2500+ 页拟合）。
+    只有绝对值过 SLOW_PAGE_SEC、**并且**超过按字数预期的 SLOW_FACTOR 倍，
+    才认为请求被晾在服务侧（GPU 停顿 / 服务重启）—— 实测那四页各 67 秒，
+    却只有 630~690 字。反过来，3000 字的页跑 8 秒是正常的，不该标。
+    """
+    if sec < C.SLOW_PAGE_SEC:
+        return ""
+    expect = C.SLOW_BASE_SEC + chars * C.SLOW_SEC_PER_CHAR
+    if sec < expect * C.SLOW_FACTOR:
+        return ""
+    return f"  ⏱ 慢（{chars} 字预期约 {expect:.1f}s，多半在等服务，不是模型慢）"
+
+
 def run(doc_id: str, channel: str = "", limit: int = 0, quiet: bool = False,
         stop_on_engine_error: bool = True, only: list = None,
-        engines: dict = None) -> dict:
+        engines: dict = None, allow_escalate: bool = True) -> dict:
     """跑待处理页。
 
     channel 留空 = 自动路由（glm/vl/human 都走）；指定则只跑该通道。
@@ -239,6 +349,7 @@ def run(doc_id: str, channel: str = "", limit: int = 0, quiet: bool = False,
     only 指定 hash 列表时只跑这几页（工作台的「重跑本页」用）。
     engines 传入一个字典即可跨调用复用引擎、且不由本次调用关闭 —— 批量跑多卷的
     vl 阶段要用它：Paddle 加载一次一分多钟，每卷重载一遍纯属浪费。
+    allow_escalate=False 关掉结构闸门：单页「重跑」已经由人指定了模型，见 rerun_one。
     """
     store.init()
     # 上一次被 Ctrl+C / 杀进程打断时，正在跑的那一页会停在 'running'，
@@ -259,12 +370,14 @@ def run(doc_id: str, channel: str = "", limit: int = 0, quiet: bool = False,
     if not pages:
         if not quiet:
             print("没有待处理的页")
-        return {"pages": 0, "done": 0, "review": 0, "failed": 0, "sec": 0}
+        return {"pages": 0, "done": 0, "review": 0, "failed": 0, "slow": 0,
+                "toc": 0, "toc_prompt": 0, "table": 0, "sec": 0}
 
     clf = Classifier(KnownLayout([C.DATA / f for f in C.TRUTH_FILES]))
     shared = engines is not None
     engines = engines if engines is not None else {}
-    stat = {"pages": 0, "done": 0, "review": 0, "failed": 0, "escalate": 0, "sec": 0.0}
+    stat = {"pages": 0, "done": 0, "review": 0, "failed": 0, "escalate": 0,
+            "slow": 0, "toc": 0, "toc_prompt": 0, "table": 0, "sec": 0.0}
     t_all = time.time()
 
     for i, pg in enumerate(pages, 1):
@@ -322,6 +435,12 @@ def run(doc_id: str, channel: str = "", limit: int = 0, quiet: bool = False,
 
         v = evaluate(rec, layout)
 
+        # 退化重读：目录点线（p9/p10）、复杂表格吐空单元格（p192）都在这里救。
+        # 只在判成退化时才动手，正常页零开销。
+        if ch == "glm":
+            rec, v = _reread_degenerate(eng, img, layout, h, rec, v, stat,
+                                        quiet=quiet, tag=f"[{i}/{len(pages)}] ")
+
         # 空白页（2026-11-03 用户两次确认）：模型没读出一句像样的东西，就是空白页，
         # 不管图像看起来是白纸还是一团灰影 —— 原书空白页拍下来常常透出背面印的
         # 字（透印），图像侧分不开「透印的白页」和「真拍糊的正文」，所以不拿清晰度
@@ -362,16 +481,24 @@ def run(doc_id: str, channel: str = "", limit: int = 0, quiet: bool = False,
                       encoding="utf-8")
 
         # ---- 结构闸门：跑完 glm 才判得出「这页是不是分格条目」----
-        new_ch, why = clf.escalate(rec.text, layout, ch)
+        # allow_escalate=False 只在「人点名了模型」的单页重跑里用：我选了 GLM，
+        # 结果就别再自作主张把这页改成 pending+vl 丢进「升级」队列。
+        # 想换 Paddle 有两条显式入口：重跑时选 VL、或勾几页按「转 VL」
+        # （store.to_channel，2026-11-06 用户要的）。
+        new_ch, why = (clf.escalate(rec.text, layout, ch) if allow_escalate
+                       else ("", ""))
         if new_ch:
             store.set_page(doc_id, h, layout=TABLE, channel=new_ch, status="pending",
                            engine=rec.engine, chars=rec.chars,
                            sec=round(rec.sec, 2), out_path=str(op),
                            err=f"结构闸门升级：{why}")
             stat["escalate"] += 1
+            slow = _slow_note(rec.sec, rec.chars)
+            if slow:
+                stat["slow"] += 1
             if not quiet:
                 print(f"  [{i}/{len(pages)}] {img.name}  glm {rec.sec:5.1f}s "
-                      f"{rec.chars:>4}字  ⤴ 升级 {new_ch}：{why}")
+                      f"{rec.chars:>4}字  ⤴ 升级 {new_ch}：{why}{slow}")
             continue
 
         store.set_page(doc_id, h, status=v.status, engine=rec.engine,
@@ -379,15 +506,22 @@ def run(doc_id: str, channel: str = "", limit: int = 0, quiet: bool = False,
                        cover=v.score if v.status == DONE else None,
                        score=v.score, out_path=str(op), err=v.reason)
         stat["done" if v.status == DONE else "review"] += 1
+        slow = _slow_note(rec.sec, rec.chars)
+        if slow:
+            stat["slow"] += 1
         if not quiet:
             flag = "" if v.status == DONE else "  ⚠"
             print(f"  [{i}/{len(pages)}] {img.name}  {layout:<5} {rec.engine:<4} "
-                  f"{rec.sec:5.1f}s {rec.chars:>4}字  {v.reason}{flag}")
+                  f"{rec.sec:5.1f}s {rec.chars:>4}字  {v.reason}{flag}{slow}")
 
     stat["sec"] = round(time.time() - t_all, 1)
     if not shared:                      # 外部传进来的引擎由外部负责关
         for e in engines.values():
             e.close()
+    # 慢页单独点一句：不然用户只看到「跑了很多秒」，分不清是模型慢还是干等
+    if stat["slow"] and not quiet:
+        print(f"\n  {stat['slow']} 页单页耗时远超按字数的预期（≥{C.SLOW_PAGE_SEC:.0f}s）——"
+              f"一般是请求在服务侧干等（GPU 停顿/服务重启），这些页的内容通常没问题")
     if stat["escalate"] and not quiet:
         print(f"\n  {stat['escalate']} 页被结构闸门升级到 {C.ESCALATE_TO} 通道。"
               f"先停掉 GLM 服务（显存要让出来），再跑："
@@ -399,17 +533,32 @@ def run(doc_id: str, channel: str = "", limit: int = 0, quiet: bool = False,
     return stat
 
 
-def rerun_one(doc_id: str, h: str) -> dict:
-    """重跑单页。工作台「重跑本页」用。
+def rerun_one(doc_id: str, h: str, channel: str = "") -> dict:
+    """重跑单页。工作台「重跑」用。
 
     先把状态重置为 pending（清空重试计数），否则 pending() 查不到它。
     原正文保留到新结果写盘为止 —— 中途失败不至于把已有内容弄丢。
+
+    channel 留空 = 用这一页原来的通道；给了就是「换模型重跑」（2026-11-06 用户
+    要的：待人工的页重跑时要能换模型）。**换到 vl 不走这里** —— Paddle 要占满
+    显存，得由 run 子进程在命令行/批跑里加载，`api_rerun` 会把那种请求改写成
+    `store.to_channel()`，只把这页排进 VL 队列。
+
+    allow_escalate=False：人已经点名用哪个模型了，结构闸门别再自作主张把它
+    改成 pending+vl（「我选了 GLM，结果你又给我换 Paddle」）。
     """
     pg = store.get_page(doc_id, h)
     if not pg:
         raise KeyError(f"没有这一页：{h}")
+    ch = channel or pg.get("channel") or route_of(pg.get("layout") or "")
+    if ch == C.ESCALATE_TO:
+        # 只有 API 会调到这里，而 api_rerun 对 vl 已经先转成队列了。
+        # 留着是为了万一以后有别的调用方：绝不能在 Web 进程里加载 Paddle。
+        raise ValueError(f"这一页要跑 {C.ESCALATE_TO}（PaddleOCR-VL），"
+                         f"不能在服务进程里重跑；请用命令行 "
+                         f"plat.bat run --doc {doc_id} --channel {ch}")
     store.set_page(doc_id, h, status="pending", retries=0, err="")
-    return run(doc_id, quiet=True, only=[h])
+    return run(doc_id, ch, quiet=True, only=[h], allow_escalate=False)
 
 
 def _vl_failed(err: str) -> bool:
@@ -519,7 +668,154 @@ def fallback_text(doc_id: str, quiet: bool = False, only_vl: bool = True) -> dic
     return st
 
 
+def _quarantine(doc_id: str, page_no: int, data: bytes) -> Path:
+    """清空一页正文前，把原文存一份到 data/_quarantine/<文档号>/。
+
+    文件名按 pNNN.md 起，重名就往后编号。为什么必须这样：同一页可能被清两次
+    （先被透印规则清空、后来人工又判一次空白），直接覆盖的话前一份备份就没了，
+    「删错了能还原」这句承诺也就不成立。
+    """
+    q = C.DATA / "_quarantine" / doc_id
+    q.mkdir(parents=True, exist_ok=True)
+    p = q / f"p{page_no:03d}.md"
+    i = 1
+    while p.exists():
+        p = q / f"p{page_no:03d}.{i}.md"
+        i += 1
+    p.write_bytes(data)
+    return p
+
+
+def batch_action(doc_id: str, hashes, action: str) -> dict:
+    """界面上一次勾多页要做的事：批量核对 / 撤销核对 / 判为空白页 / 转 VL。
+
+    「判为空白」的落库口径跟 bleed_scan 完全一致（status=done、chars=0、
+    err 写明原因），区别只在判据 —— 这里是人工看过图定的，不是规则算的。
+    原文照旧备份到 data/_quarantine，误点一页也能捞回来。
+
+    「转 VL」（2026-11-06 用户要的）：待人工里那类 GLM 根本读不了的页（目录点线
+    死循环、图版当表格拆），勾一批直接排进 VL 队列，不用一页页去命令行。
+    """
+    if action not in ("verify", "unverify", "blank", "to_vl"):
+        raise ValueError(f"未知批量操作：{action}")
+    if action == "to_vl":
+        n = store.to_channel(doc_id, hashes, "vl", why="工作台批量转 VL")
+        gone = [h for h in hashes if not store.get_page(doc_id, h)]
+        return {"done": n, "skipped": gone, "channel": "vl"}
+    ok, skipped = 0, []
+    for h in hashes:
+        pg = store.get_page(doc_id, h)
+        if not pg:
+            skipped.append(h)
+            continue
+        if action == "verify":
+            store.verify(doc_id, h, "ok", "批量核对")
+        elif action == "unverify":
+            store.unverify(doc_id, h)
+        else:
+            p = pg.get("out_path")
+            if p and Path(p).exists() and Path(p).stat().st_size > 0:
+                _quarantine(doc_id, pg["page_no"], Path(p).read_bytes())
+            if p:
+                Path(p).write_text("", encoding="utf-8")
+            store.set_page(doc_id, h, status="done", chars=0, cover=None,
+                           err="空白页（人工判定）")
+            store.verify(doc_id, h, "ok", "人工判为空白页")
+        ok += 1
+    return {"done": ok, "skipped": skipped}
+
+
 # 人工改过的正文直接落盘，同时记一条 edited 核对记录
+def _undo_dir(doc_id: str, h: str) -> Path:
+    return C.DATA / "_undo" / doc_id / h
+
+
+# 一页留几份历史：够回退到「改坏之前」就行，留太多只会占盘
+UNDO_KEEP = 20
+
+
+def _undo_snapshot(doc_id: str, h: str, data: bytes) -> Path | None:
+    """覆盖一页正文之前，把旧内容存一份到 data/_undo/<文档号>/<hash>/。
+
+    为什么必须有：save_text 是**直接覆盖** out_path，一次改错就再也回不去
+    （旧版连 .bak 都没有，只有透印清理那条路会备份）。文件名用时间戳，
+    同一秒内连改两次就往后编号 —— 覆盖式备份等于没备份。
+    """
+    if not data:
+        return None
+    d = _undo_dir(doc_id, h)
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    p = d / f"{stamp}.md"
+    i = 1
+    while p.exists():
+        p = d / f"{stamp}-{i}.md"
+        i += 1
+    p.write_bytes(data)
+    # 只留最近若干份，老的删掉（按文件名排序即时间序）
+    for old in sorted(d.glob("*.md"))[:-UNDO_KEEP]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return p
+
+
+def undo_history(doc_id: str, h: str) -> list:
+    """这一页的历史版本，新的在前。"""
+    from .legacy import render_text, text_len
+    d = _undo_dir(doc_id, h)
+    if not d.is_dir():
+        return []
+    out = []
+    for p in sorted(d.glob("*.md"), reverse=True):
+        try:
+            t = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        body = t.strip()
+        # 预览要给人看：库里存的是 markdown/HTML，直接截前 120 字会看到
+        # `<table border=1 style='margin: auto; ...'>`，等于没预览
+        flat = re.sub(r"\s+", " ", render_text(
+            t, "flat", vertical=C.is_vertical(doc_id))).strip()
+        if not flat:
+            # 渲染出来是空的（残缺的 HTML 片段、只有表格标签）——退一步去掉标签再截，
+            # 总比给用户看一行空白强
+            flat = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", t)).strip()
+        out.append({
+            "name": p.name,
+            "size": p.stat().st_size,
+            "chars": text_len(body),
+            "head": flat[:120],
+        })
+    return out
+
+
+def undo_restore(doc_id: str, h: str, name: str) -> int:
+    """把某一页恢复成历史版本。恢复前同样先快照当前内容 —— 恢复也能后悔。"""
+    from .legacy import text_len
+    # 只认目录里真实存在的文件名，挡掉 ../ 之类的路径穿越
+    if not re.fullmatch(r"[\w\-]+\.md", name or ""):
+        raise ValueError(f"历史文件名不合法：{name}")
+    src = _undo_dir(doc_id, h) / name
+    if not src.is_file():
+        raise ValueError(f"找不到这份历史：{name}")
+    pg = store.get_page(doc_id, h)
+    if not pg:
+        raise KeyError(f"没有这一页：{h}")
+
+    op = Path(pg["out_path"]) if pg.get("out_path") else C.PAGES / h[:C.SHARD] / f"{h}.md"
+    if op.exists():
+        _undo_snapshot(doc_id, h, op.read_bytes())
+    text = src.read_text(encoding="utf-8").strip()
+    op.parent.mkdir(parents=True, exist_ok=True)
+    op.write_text(text + "\n", encoding="utf-8")
+    n = text_len(text)
+    store.set_page(doc_id, h, out_path=str(op), chars=n)
+    store.verify(doc_id, h, "edited", f"从历史恢复（{name}）")
+    return n
+
+
 def save_text(doc_id: str, h: str, text: str) -> int:
     pg = store.get_page(doc_id, h)
     if not pg:
@@ -527,6 +823,12 @@ def save_text(doc_id: str, h: str, text: str) -> int:
     text = (text or "").replace("\r\n", "\n").strip()
     op = C.PAGES / h[:C.SHARD] / f"{h}.md"
     op.parent.mkdir(parents=True, exist_ok=True)
+    # 覆盖前留底：这是唯一能「撤回上一次修改」的东西
+    if op.exists():
+        try:
+            _undo_snapshot(doc_id, h, op.read_bytes())
+        except OSError:
+            pass
     op.write_text(text + "\n", encoding="utf-8")
     from .legacy import text_len
     n = text_len(text)                 # 表格页的标签不算字
@@ -623,17 +925,117 @@ def _page_text(pg) -> str:
     return ""
 
 
+# 平铺文本缓存：搜索要逐页读文件，316 页每次重读约 100ms，够用但不该反复算。
+# key 用 hash、值里带 mtime —— 页面被重跑/改动后自动失效。
+_FLAT_CACHE: dict = {}
+
+
+def page_flat(pg) -> str:
+    """这一页给人看的纯文本（表格摊平、去 markdown 记号）。
+
+    搜索和「上一页末尾/下一页开头」都用它：正文原文里的 <td style=...> 既搜不到
+    也读不了，赔率比搜原文大得多。
+    """
+    from .legacy import render_text
+    p = pg.get("out_path")
+    if not p:
+        return ""
+    path = Path(p)
+    try:
+        mt = path.stat().st_mtime
+    except OSError:
+        return ""
+    key = pg.get("hash") or str(path)
+    hit = _FLAT_CACHE.get(key)
+    if hit and hit[0] == mt:
+        return hit[1]
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    t = render_text(raw, "flat", vertical=C.is_vertical(pg.get("doc_id")))
+    if len(_FLAT_CACHE) > 6000:          # 换过的书太多就把缓存丢掉重来
+        _FLAT_CACHE.clear()
+    _FLAT_CACHE[key] = (mt, t)
+    return t
+
+
+def _squash_ws(s: str) -> str:
+    return re.sub(r"[\s\u3000]+", " ", s or "").strip()
+
+
+def search_text(doc_id: str, q: str, limit: int = 200) -> dict:
+    """全书正文搜索：返回命中的页 + 每页第一处命中的上下文片段。
+
+    为什么不走 SQL：正文在 md 文件里，库中只有字数。几百页全读一遍是百毫秒级，
+    换来的能力是「这句话在第几页」——以前只能一页页点。
+    多个关键词用空格分开，要求全部命中（AND），符合「我记得几个词」的检索习惯。
+    """
+    terms = [t for t in re.split(r"[\s\u3000]+", (q or "").strip()) if t]
+    if not terms:
+        return {"total": 0, "pages": [], "terms": []}
+
+    pages = store.queue(doc_id, "all", limit=10 ** 9)
+    ver = store.verified_set(doc_id)
+    hits = []
+    for pg in pages:
+        flat = page_flat(pg)
+        if not flat:
+            continue
+        # 先按原文匹配；宽表会被渲染成「网 具 名 称」（每字之间一个空格），
+        # 搜「网具」在原文里永远中不了，所以再来一遍「去掉全部空白」的匹配。
+        body = None
+        for cand in (flat, re.sub(r"\s+", "", flat)):
+            cl = cand.lower()
+            if all(t.lower() in cl for t in terms):
+                body = cand
+                break
+        if body is None:
+            continue
+        low = body.lower()
+        first = low.find(terms[0].lower())
+        # 片段按原始长度取窗口：上下文用原文算，显示时再压空白
+        pos = max(0, first - 24)
+        snip = _squash_ws(body[pos:first + 90])
+        hits.append({
+            "hash": pg["hash"], "page_no": pg["page_no"],
+            "src": Path(pg["src_path"]).name,
+            "status": pg["status"], "layout": pg["layout"],
+            "channel": pg["channel"], "chars": pg["chars"] or 0,
+            "err": pg["err"] or "",
+            "verified": "ok" if pg["hash"] in ver else "",
+            "snip": ("…" if pos > 0 else "") + snip,
+            "hits": low.count(terms[0].lower()),
+        })
+    hits.sort(key=lambda x: (-x["hits"], x["page_no"]))
+    return {"total": len(hits), "pages": hits[:limit], "terms": terms}
+
+
+def page_peek(pg, tail: bool, n: int = 110) -> str:
+    """相邻页的一小段文字：上一页取结尾、下一页取开头。"""
+    t = _squash_ws(page_flat(pg))
+    if not t:
+        return ""
+    return ("…" + t[-n:]) if tail else (t[:n] + "…")
+
+
 def bleed_flags(doc_id: str, pages=None) -> dict:
     """全书逐页判「原本空白、只是背面透印」。返回 {页号: True/False}。
 
     判据在 docplat/bleed.py 里 —— 核心是「这页有没有正印的深墨」，
     与模型读出什么无关（模型对透印页会读成乱码，也会干脆编一段）。
     读图失败或拿不准的页一律给 False：宁可漏删，不能把真正文误当空白。
+    影像页不参与判定（返回里没有它们，调用方 get 到 None 即「不是空白」）：
+    这页本来就没有正印文字，判成空白会把该出的「影像」占位一起吞掉。
     """
     from . import bleed
 
     pages = pages or store.queue(doc_id, "all", limit=10 ** 9)
-    rows = [(pg["page_no"], pg["src_path"], _page_text(pg)) for pg in pages]
+    # 影像页不参与判定：这页本来就该没有正印文字，bleed 的「深墨」判据对它
+    # 没有意义。让它参与会把「影像」占位一起吞掉 —— zu 的 p241/p242 就是这么
+    # 在导出里消失的（两页人工核过、layout=image，被当成透印空白跳过）。
+    rows = [(pg["page_no"], pg["src_path"], _page_text(pg))
+            for pg in pages if pg.get("layout") != IMAGE]
     return {pn: (v[0] is True) for pn, v in bleed.scan(rows).items()}
 
 
@@ -661,7 +1063,10 @@ def bleed_scan(doc_id: str, apply: bool = False, include_review: bool = False,
         verified = store.verified_set(doc_id)
     except Exception:
         verified = set()
-    rows = [(pg["page_no"], pg["src_path"], _page_text(pg)) for pg in pages]
+    # 影像页和 bleed_flags 一样排除：这页本来就没有正印文字，
+    # 判成「透印空白」会把该保留的影像页一起清掉。
+    rows = [(pg["page_no"], pg["src_path"], _page_text(pg))
+            for pg in pages if pg.get("layout") != IMAGE]
     res = bleed.scan(rows)
     todo_ok = {"done"} | ({"review", "escalated"} if include_review else set())
 
@@ -693,7 +1098,7 @@ def bleed_scan(doc_id: str, apply: bool = False, include_review: bool = False,
     for pg, why in hits:
         p = pg.get("out_path")
         if p and Path(p).exists() and Path(p).stat().st_size > 0:
-            (q / f"p{pg['page_no']:03d}.md").write_bytes(Path(p).read_bytes())
+            _quarantine(doc_id, pg["page_no"], Path(p).read_bytes())
             moved += 1
         if p:
             Path(p).write_text("", encoding="utf-8")
@@ -719,7 +1124,9 @@ def book_of(src_dir) -> tuple:
     # 单卷书直接摊在「书籍」这种收集根下（源目录就是 书籍\书名\图片）：
     # 上上级只是收集目录、不是丛书名，拿它当外层会白多一层「书籍」。
     # 口径（2026-11-03）：这种情况外层目录用书名自己 —— 书籍导出\书名\书名.txt
-    if series.strip().lower() in C.SERIES_ROOT_NAMES:
+    # 按日期分堆的批次目录（书籍\1105\书名\图片）同理，1105 是批次不是丛书（11-05 补）
+    if (series.strip().lower() in C.SERIES_ROOT_NAMES
+            or C.BATCH_DIR_RE.match(series.strip())):
         series = book
     return series, book
 
@@ -735,6 +1142,25 @@ def export_target(src_dir, root=None, ext: str = "") -> Path:
     if not book:                       # 兜底：没有来源目录
         return root / f"未命名.{ext or C.EXPORT_FORMAT}"
     return root / series / f"{book}.{ext or C.EXPORT_FORMAT}"
+
+
+def _mkdirs(p) -> Path:
+    """建导出目录，失败时把「哪个目录、为什么、怎么修」讲清楚。
+
+    原始错误只有一句 `PermissionError: [WinError 5] 拒绝访问`，看不出是权限
+    问题还是路径写错。2026-11-06 水西颂导出失败就是这么来的：桌面目录的 ACL
+    里有一条显式的「本账户 RX」排在继承的「完全控制」之前 —— 能读、能遍历，
+    就是不能新建子目录，于是每本还没有导出目录的新书都导不出来。
+    """
+    p = Path(p)
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        raise PermissionError(
+            f"建不了导出目录：{p}（{e}）。当前账户在这里需要「完全控制」；"
+            f'可以执行 icacls "{p.parent}" /grant "Administrator:(OI)(CI)(F)" 后重试'
+        ) from e
+    return p
 
 
 
@@ -755,7 +1181,7 @@ def export(doc_id: str, out_name: str = "", src: str = "", root=None,
     out_name 给了就按它走（绝对路径直接用），否则按 export_target 推。
     report=True 时把「用了多少页、跳了多少页」打到 stdout。
     """
-    from .legacy import render_text
+    from .legacy import book_layout_pages, page_mark, render_text
 
     store.init()
     doc = store.get_doc(doc_id)
@@ -764,13 +1190,22 @@ def export(doc_id: str, out_name: str = "", src: str = "", root=None,
     if out_name:
         dst = Path(out_name)
         if not dst.is_absolute():
-            dst = export_target(src_dir, root, ext).parent / out_name
+            # 只给文件名（`试读.txt`）→ 放在导出目录旁边，方便翻交付目录时看到。
+            # 给了相对路径（`_tmp/exp/x.txt`）→ 按当前目录解析。以前一律拼到
+            # 导出目录，结果在桌面每本书下面都建出一个 _tmp/exp（2026-11-04 踩过）。
+            dst = (dst.resolve() if dst.parent != Path(".")
+                   else export_target(src_dir, root, ext).parent / dst)
     else:
         dst = export_target(src_dir, root, ext)
 
     suffix = dst.suffix.lower()
     if not tables:
         tables = "auto" if suffix == ".md" else "flat"
+
+    # 先把目录建好再干活：一整本渲染要几秒到几十秒，目录建不出来（桌面权限、
+    # 盘没挂上）就该当场报错。以前放在最后，白跑一遍才炸，报错还只有一句
+    # 「WinError 5 拒绝访问」，看不出是权限问题（2026-11-06 水西颂导出失败）
+    _mkdirs(dst.parent)
 
     pages = store.queue(doc_id, "all", limit=10 ** 9)
     pages.sort(key=lambda r: r["page_no"])
@@ -779,7 +1214,21 @@ def export(doc_id: str, out_name: str = "", src: str = "", root=None,
     # 判据见 bleed.py：看「这页有没有正印的深墨」，不看文本像不像话。
     # 这里只跳过、不改库；要清库跑 `plat.bat bleed --doc ... --apply`。
     ink_blank = bleed_flags(doc_id, pages)
-    buf, used, empty, img = [], 0, 0, 0
+    buf, used, empty, img, chars = [], 0, 0, 0, 0
+
+    def _push(pg, text: str):
+        """一页正文进缓冲：前面加一行页码（全局规则，见 config.PAGE_MARKS）。
+
+        形态 【第11页 / Image00011】 —— 页码对原书，文件名对图库。
+        """
+        nonlocal chars
+        chars += len(re.sub(r"\s", "", text))
+        mark = ""
+        if C.PAGE_MARKS:
+            src = pg.get("src_path") or ""
+            mark = page_mark(pg["page_no"], Path(src).stem if src else "")
+        buf.append(f"{mark}\n{text}" if mark else text)
+
     for pg in pages:
         if ink_blank.get(pg["page_no"]):
             empty += 1
@@ -788,7 +1237,7 @@ def export(doc_id: str, out_name: str = "", src: str = "", root=None,
         p = pg.get("out_path")
         if p and Path(p).exists():
             raw = Path(p).read_text(encoding="utf-8")
-            t = render_text(raw, tables).strip()
+            t = render_text(raw, tables, vertical=C.is_vertical(doc_id)).strip()
         bare = len(re.sub(r"\s", "", t))
 
         # 影像页（整页就是照片/拓片/插图，本来没有字）留一行「影像」：
@@ -802,7 +1251,7 @@ def export(doc_id: str, out_name: str = "", src: str = "", root=None,
             # 但模型对模糊影像常回一句英文 _"too blurry to recognize"_ ——
             # 那是它在解释自己没读，不是族谱内容，别往正文里塞。
             keep = bare >= TITLE_MIN and re.search(r"[\u4e00-\u9fff]", t)
-            buf.append("影像" + ("\n" + t if keep else ""))
+            _push(pg, "影像" + ("\n" + t if keep else ""))
             used += 1
             img += 1
             continue
@@ -820,20 +1269,24 @@ def export(doc_id: str, out_name: str = "", src: str = "", root=None,
         # 正文里只剩图没有题，用户明确要求补回来。
         has_cn = bool(re.search(r"[\u4e00-\u9fff]", t))
         if has_cn and bare >= TITLE_MIN:
-            buf.append(t)
+            _push(pg, t)
             used += 1
             continue
         if bare < BLANK_MIN or (not has_cn and META_EN.search(t)):
             empty += 1
             continue
-        buf.append(t)
+        _push(pg, t)
         used += 1
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text("\n\n".join(buf) + "\n", encoding="utf-8")
+    dst.parent.mkdir(parents=True, exist_ok=True)   # 已在开头建过，这里只是兜底
+    # 交付 txt 照纸书排：段首缩进两格、段间不空行（用户 2026-11-04 定）。
+    # .md 保留空行/管道表，那是 markdown 的语法，不能按书排。
+    body = (book_layout_pages(buf) if tables == "flat"
+            else "\n\n".join(buf))
+    dst.write_text(body + "\n", encoding="utf-8")
     if report:
         print(f"  合并 {used} 页"
               + (f"（其中影像 {img} 页）" if img else "")
               + (f"，跳过 {empty} 页（空白）" if empty else "")
-              + f"，{len(''.join(buf))} 字")
+              + f"，{chars} 字")
     return dst

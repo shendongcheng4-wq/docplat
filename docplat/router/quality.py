@@ -33,6 +33,34 @@ def coverage(gold: str, pred: str) -> float:
     return inter / max(len(gold), len(pred))
 
 
+_PIPE_ONLY_RE = re.compile(r"^[\s|｜]+$")
+
+
+def _empty_grid(text: str) -> bool:
+    """整页是不是「只有表头标签 + 一片空格子」的空白表单模板。
+
+    p58「市机关部门领导干部领导联系点登记表」、p132「党内民主评议表」都是这样：
+    原图是没填写的表格，GLM 读对表头后连吐 9~13 行 `| | | |`。每行都不一样
+    （都是空的），压缩冗余抓不到；但「行块重复」会把它当成退化 —— 其实是真内容，
+    空格子就是这张表的样子。
+
+    判据：管道行 ≥4，其中纯竖线/空白的行 ≥3 且占 60% 以上，剩下的字还能成句。
+    上限 200 格是为了把「整页拆格崩成上千个空壳」那种真失败挡在外面。
+    """
+    lines = [ln for ln in (text or "").split("\n") if ln.strip()]
+    pipes = [ln for ln in lines if "|" in ln or "｜" in ln]
+    if len(pipes) < 4:
+        return False
+    empty = [ln for ln in pipes if _PIPE_ONLY_RE.match(ln)]
+    if len(empty) < 3 or len(empty) / len(pipes) < 0.6:
+        return False
+    cells = sum(ln.count("|") + ln.count("｜") for ln in pipes)
+    if cells > 200:
+        return False
+    rest = "\n".join(ln for ln in lines if not _PIPE_ONLY_RE.match(ln))
+    return len(re.sub(r"[\s|｜:=\-]", "", rest)) >= 10
+
+
 def evaluate(rec, layout: str, gold: str = "", expect_chars: int = 0) -> Verdict:
     from ..legacy import text_len, text_only
     text = (rec.text or "").strip()
@@ -72,6 +100,11 @@ def evaluate(rec, layout: str, gold: str = "", expect_chars: int = 0) -> Verdict
     if red >= C.DEGEN_REDUNDANCY:
         return Verdict(REVIEW, 0.1,
                        f"疑似重复生成（压缩冗余 {red:.2f}，正常页约 0.28），需重跑或人工")
+
+    # 空白表单模板：表头读对了，格子本来就是空的（见 _empty_grid）。
+    # 要在「整块重复」之前判，否则那一片空格子会被当成退化。
+    if _empty_grid(text):
+        return Verdict(DONE, 0.9, f"空白表格（表单未填写，{n} 字表头）")
 
     # 整块重复：每行都不重复，只有「行块」重复，上面的冗余度抓不到
     bratio, bhits, bsample = _block_rep(text)
