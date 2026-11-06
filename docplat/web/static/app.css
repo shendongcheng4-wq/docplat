@@ -1,185 +1,668 @@
-/* 校对工作台 —— 样式沿用 v1 的视觉语言（这套配色和竖排字号是调出来的） */
+/* 校对工作台 —— 校样台
+   ------------------------------------------------------------------
+   三块颜色各有岗位，别混用：
+     墨蓝（顶栏 #182029）   = 机器与工具，退到暗处
+     暖纸（#f7f4ee / #fdfbf7）= 待读的字，全屏最亮的就是正文
+     朱红（#9c3a2e）        = 印章与错处，一屏只该出现几处
+     金（#b8892f）          = 装订线、活跃指示这类「别人的东西」，很轻
+
+   花在哪儿：顶部一条三色书脊条、原图栏做成灯箱、正文栏做成校样纸、
+   六个队列各自一块卡片、进度条走斜纹。都不碰可读性 —— 正文仍是
+   19px 宋体宽行距，页边比原来多留了 4px。
+   ------------------------------------------------------------------ */
 :root{
-  --bg:#f5f5f2; --panel:#fff; --border:#e2e1dc; --border2:#cfcec8;
-  --text:#1d1d1b; --muted:#6d6c66; --faint:#9b9a93;
-  --accent:#185fa5; --accent-bg:#e6f1fb;
-  --red:#a32d2d; --red-bg:#fbe3e2;
-  --amber:#854f0b; --amber-bg:#faeeda;
-  --green:#3b6d11; --green-bg:#eaf3de;
-  --mono:"Cascadia Mono",Consolas,monospace;
+  --bg:#f7f4ee; --panel:#fdfbf7; --raised:#efe9df; --sunk:#ece5d9;
+  --line:rgba(31,27,22,.09); --line-2:rgba(31,27,22,.16);
+  --text:#1f1b16; --sub:#5e554a; --muted:#7b7266;
+
+  --accent:#1f4467; --accent-ink:#183854; --accent-lite:#2b5c8a;
+  --accent-soft:#e8eef4; --accent-wash:#f0f5fa;
+  --seal:#9c3a2e; --seal-lite:#b8452f; --gold:#b8892f;
+  --ok:#3f7048; --warn:#8a5a13; --bad:#98322a;
+
+  --ink-bar:#182029; --ink-bar-2:#101820; --ink-line:rgba(255,255,255,.13);
+  --ink-text:rgba(255,255,255,.93); --ink-dim:rgba(255,255,255,.56);
+
+  --mono:"Cascadia Mono",Consolas,"Courier New",monospace;
   --serif:"Source Han Serif SC","Songti SC",SimSun,serif;
+  --ease:cubic-bezier(.22,1,.36,1);
+  --shadow-1:0 1px 2px rgba(31,27,22,.07), 0 2px 8px rgba(31,27,22,.04);
+  --shadow-2:0 2px 6px rgba(31,27,22,.08), 0 12px 28px rgba(31,27,22,.10);
 }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 body{
   background:var(--bg); color:var(--text);
-  font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;
+  font:13px/1.6 system-ui,"Microsoft YaHei",sans-serif;
   display:flex; flex-direction:column; overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2{margin:0}
+
+/* 装订书脊：三色细条压在最顶，朱→金→靛。整屏唯一一处「三色」，起定位作用 */
+body::before{
+  content:''; position:fixed; top:0; left:0; right:0; height:3px; z-index:100;
+  background:linear-gradient(90deg,
+    #8f3227 0%, #a8442f 14%, #c9992f 42%, #a8a06f 58%, #2b5c8a 84%, #1f4467 100%);
+  box-shadow:0 1px 0 rgba(0,0,0,.25);
 }
 
-/* ---- 顶栏 ---- */
+/* ---- 顶栏：墨蓝 ----
+   一条线放下三组东西：这是什么（书名）、还有多少活（计数）、能做什么（按钮）。
+   挤不下时先收快捷键提示，再收计数 —— 按钮一律不藏。 */
 header{
-  display:flex; align-items:center; gap:10px; padding:9px 14px;
-  background:var(--panel); border-bottom:1px solid var(--border); flex-wrap:wrap;
+  display:flex; align-items:center; gap:12px; padding:0 16px; height:54px;
+  background:linear-gradient(180deg, #1d2833 0%, var(--ink-bar) 46%, var(--ink-bar-2) 100%);
+  border-bottom:1px solid #0a1015; color:var(--ink-text);
+  flex-wrap:nowrap; min-width:0; flex:none;
+  box-shadow:0 2px 10px rgba(10,16,21,.22), inset 0 1px 0 rgba(255,255,255,.06);
+  position:relative; z-index:20;
 }
-header h1{font-size:15px; font-weight:500; margin:0; letter-spacing:.02em}
-.badge{font-size:12px; color:var(--muted); background:var(--bg);
-  border:1px solid var(--border); border-radius:20px; padding:1px 9px}
-.badge.warn{background:var(--amber-bg); color:var(--amber); border-color:transparent}
-.spacer{flex:1}
+header h1{
+  font-family:var(--serif); font-size:15px; font-weight:500;
+  letter-spacing:.05em; color:#f6f1e6;
+  flex:none; white-space:nowrap; display:flex; align-items:center; gap:9px;
+}
+/* 品牌印：一枚很小的朱印，跟列表里「校」是同一套语言 */
+.brand-seal{
+  width:20px; height:20px; flex:none; border-radius:3px;
+  background:linear-gradient(160deg, #b8452f, #8f3227);
+  color:#fdf8f2; font-family:var(--serif); font-size:12px; line-height:20px;
+  text-align:center; letter-spacing:0;
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.28), 0 1px 3px rgba(0,0,0,.4);
+  transform:rotate(-3deg);
+}
+header h1::after{content:''; display:inline-block; width:1px; height:15px;
+  background:var(--ink-line); margin-left:2px}
+header > button{flex:none}
+.spacer{flex:1; min-width:8px}
+
 select{
-  font:inherit; font-size:13px; padding:4px 8px; border-radius:7px;
-  border:1px solid var(--border2); background:var(--panel); color:var(--text);
-}
-button{
-  font:inherit; font-size:13px; padding:5px 12px; border-radius:7px;
-  border:1px solid var(--border2); background:var(--panel); color:var(--text);
-  cursor:pointer; transition:.12s;
-}
-button:hover{border-color:var(--accent); color:var(--accent)}
-button.primary{background:var(--accent); border-color:var(--accent); color:#fff}
-button.primary:hover{opacity:.9; color:#fff}
-button:disabled{opacity:.4; cursor:not-allowed}
-button.mini{padding:2px 8px; font-size:12px}
-
-/* ---- 主体三栏 ---- */
-main{flex:1; display:grid; grid-template-columns:var(--aside-w,330px) 6px 1fr 1fr; min-height:0}
-.splitter{cursor:col-resize; background:var(--border); position:relative;
-  border-left:1px solid var(--panel); border-right:1px solid var(--panel)}
-.splitter:hover,.splitter.dragging{background:var(--accent)}
-.splitter::after{content:''; position:absolute; inset:-6px -3px}
-
-/* ---- 左：队列 ---- */
-aside{background:var(--panel); border-right:1px solid var(--border);
-  display:flex; flex-direction:column; min-height:0}
-.tabs{display:flex; gap:2px; padding:6px 8px 0; flex-wrap:wrap}
-.tabs button{
-  border:1px solid transparent; border-bottom:none; border-radius:7px 7px 0 0;
-  padding:5px 9px; font-size:12px; color:var(--muted); background:transparent;
-}
-.tabs button.on{background:var(--bg); border-color:var(--border); color:var(--text); font-weight:500}
-.tabs button b{font-family:var(--mono); font-weight:500; font-size:11px; margin-left:2px; color:var(--faint)}
-.tabs button.on b{color:var(--accent)}
-.tabs button.hot b{color:var(--red)}
-
-.filter{padding:7px 8px; border-bottom:1px solid var(--border); display:flex; gap:6px}
-.filter input{
-  flex:1; min-width:0; font:inherit; font-size:12px; padding:3px 8px;
-  border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text);
-  outline:none;
-}
-.filter input:focus{border-color:var(--accent)}
-
-.list{overflow:auto; flex:1}
-.item{display:flex; align-items:center; gap:7px; padding:6px 10px;
-  cursor:pointer; border-left:3px solid transparent; font-size:13px}
-.item:hover{background:var(--bg)}
-.item.active{background:var(--accent-bg); border-left-color:var(--accent)}
-.item .pid{font-family:var(--mono); font-size:12px; color:var(--muted); min-width:44px}
-.item .fname{flex:1; min-width:0; font-size:11px; color:var(--faint);
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-.item .tag{font-size:10px; padding:0 4px; border-radius:3px; flex:none;
-  background:var(--bg); color:var(--faint); border:1px solid var(--border)}
-.item .tag.vl{background:var(--amber-bg); color:var(--amber); border-color:transparent}
-.item .tag.glm{background:var(--green-bg); color:var(--green); border-color:transparent}
-.item .ok{color:var(--green); font-size:12px; flex:none}
-.item .bad{color:var(--red); font-size:12px; flex:none}
-.dot{width:6px;height:6px;border-radius:50%;background:var(--border2);flex:none}
-.dot.ok{background:var(--green)} .dot.warn{background:var(--amber)} .dot.bad{background:var(--red)}
-
-.pager{display:flex; align-items:center; gap:6px; padding:6px 8px;
-  border-top:1px solid var(--border); font-size:12px; color:var(--muted)}
-.pager button{padding:2px 9px; font-size:12px}
-.pager span{flex:1; text-align:center}
-
-/* ---- 中：原图 ---- */
-.pane{display:flex; flex-direction:column; min-height:0; border-right:1px solid var(--border)}
-.pane:last-child{border-right:none}
-.pane-head{display:flex; align-items:center; gap:8px; padding:6px 12px;
-  border-bottom:1px solid var(--border); background:var(--panel); font-size:12px;
-  color:var(--muted); min-height:38px}
-.pane-head .spacer{flex:1}
-.imgwrap{flex:1; overflow:auto; background:#e8e7e2; display:flex;
-  align-items:flex-start; justify-content:center; padding:12px}
-.imgwrap img{background:#fff; box-shadow:0 1px 6px rgba(0,0,0,.12); max-width:100%; cursor:zoom-in}
-.imgwrap.zoom img{max-width:none; cursor:zoom-out}
-
-/* ---- 右：正文 ---- */
-.textwrap{flex:1; overflow:auto; padding:18px 22px}
-.text{font-family:var(--serif); font-size:19px; line-height:2.1;
-  white-space:pre-wrap; word-break:break-all; letter-spacing:.04em;
-  max-width:34em; outline:none}
-textarea{
-  width:100%; min-height:100%; border:none; outline:none; resize:none;
-  font-family:var(--serif); font-size:19px; line-height:2.1; letter-spacing:.04em;
-  background:transparent; color:var(--text); padding:0;
-}
-.empty{color:var(--faint); font-size:14px; line-height:1.9}
-
-.statbar{display:flex; gap:10px; align-items:center; padding:7px 14px;
-  border-top:1px solid var(--border); background:var(--panel);
-  font-size:12px; color:var(--muted); flex-wrap:wrap}
-.statbar b{font-weight:500; color:var(--text)}
-.pill{padding:1px 8px; border-radius:20px; border:1px solid var(--border)}
-.pill.red{background:var(--red-bg); color:var(--red); border-color:transparent}
-.pill.amber{background:var(--amber-bg); color:var(--amber); border-color:transparent}
-.pill.green{background:var(--green-bg); color:var(--green); border-color:transparent}
-.pill.mono{font-family:var(--mono)}
-.hint{font-size:12px; color:var(--faint)}
-
-/* ---- 提示 ---- */
-.toast{position:fixed; left:50%; bottom:30px; transform:translate(-50%,20px);
-  background:#1d1d1b; color:#fff; font-size:13px; padding:8px 16px;
-  border-radius:8px; opacity:0; pointer-events:none; transition:.22s; z-index:70;
-  max-width:70vw; box-shadow:0 6px 24px rgba(0,0,0,.22)}
-.toast.show{opacity:1; transform:translate(-50%,0)}
-.toast.err{background:var(--red)}
-
-.emptybox{padding:26px 16px; text-align:center; color:var(--muted)}
-.emptybox .big{font-size:13px; color:var(--text); margin-bottom:6px}
-.emptybox .hint{display:block; line-height:1.8}
-
-/* ---- 导入对话框 ---- */
-dialog{
-  border:1px solid var(--border2); border-radius:10px; padding:0;
-  background:var(--panel); color:var(--text); width:min(620px,92vw);
-  box-shadow:0 12px 40px rgba(0,0,0,.18);
-}
-dialog::backdrop{background:rgba(30,30,28,.28)}
-dialog form{padding:16px 18px 14px}
-dialog h2{font-size:15px; font-weight:500; margin:0 0 6px}
-dialog .hint{font-size:12px; color:var(--muted); line-height:1.7; margin:0 0 14px}
-dialog label{display:block; font-size:12px; color:var(--muted); margin:10px 0 4px}
-dialog .faint{color:var(--faint)}
-dialog input{
-  width:100%; font:inherit; font-size:13px; font-family:var(--mono);
-  padding:6px 9px; border-radius:7px; border:1px solid var(--border2);
+  font:inherit; font-size:12.5px; height:32px; padding:0 8px;
+  border-radius:8px; border:1px solid var(--line-2);
   background:var(--bg); color:var(--text);
+  flex:0 1 232px; min-width:104px; max-width:232px;
 }
-dialog input:focus{outline:none; border-color:var(--accent);
-  box-shadow:0 0 0 3px var(--accent-bg)}
-.dlgfoot{display:flex; justify-content:flex-end; gap:8px; margin-top:18px}
+select:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+/* 顶栏里的下拉是深底的，选项列表仍是系统浅色 */
+header select{
+  background:rgba(255,255,255,.07); color:var(--ink-text);
+  border-color:rgba(255,255,255,.16);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+}
+header select:hover{background:rgba(255,255,255,.11); border-color:rgba(255,255,255,.26)}
+header select:focus-visible{outline-color:#7fa8c9}
+header select option{background:#232f3a; color:#f2eee4}
 
-/* ---- 跑批进度条 ---- */
-.runbar{
-  display:flex; align-items:center; gap:10px; padding:6px 14px;
-  background:var(--accent-bg); border-bottom:1px solid var(--border);
-  font-size:12px; color:var(--text);
+.counter{
+  font-family:var(--mono); font-size:11.5px; color:var(--muted);
+  font-variant-numeric:tabular-nums; white-space:nowrap;
+  flex:none;
 }
-.runbar .rlabel{flex:none; min-width:150px; font-variant-numeric:tabular-nums}
+header .counter{color:var(--ink-dim)}
+header .counter.busy{color:#e5b968}
+
+/* 服务灯：识别服务（GLM 8081）通不通。以前只能点「开始识别」等它自己拉起，
+   或者去翻日志才知道它死了。点一下看日志尾巴。 */
+.lamp{
+  display:flex; align-items:center; gap:6px; height:28px; padding:0 9px;
+  font-size:12px; color:var(--sub); border:1px solid transparent;
+  border-radius:6px; flex:none; background:transparent;
+}
+.lamp .lampdot{
+  width:7px; height:7px; border-radius:50%; background:var(--line-2); flex:none;
+  transition:background-color .2s var(--ease), box-shadow .2s var(--ease);
+}
+.lamp.up .lampdot{background:#6fae6f; box-shadow:0 0 0 3px rgba(111,174,111,.20), 0 0 8px rgba(111,174,111,.7)}
+.lamp.down{color:#e79a8e; background:transparent}
+.lamp.down .lampdot{
+  background:#d2564a; box-shadow:0 0 0 3px rgba(210,86,74,.20), 0 0 9px rgba(210,86,74,.75);
+  animation:blip 1.8s ease-in-out infinite;
+}
+.lamp:hover{background:var(--raised); border-color:transparent; color:var(--text)}
+.lamp.down:hover{color:#f0b2a8}
+/* 只让光晕呼吸，不闪文字 —— GLM 掉线是常事，闪一整晚太吵 */
+@keyframes blip{
+  0%,100%{box-shadow:0 0 0 3px rgba(210,86,74,.20), 0 0 9px rgba(210,86,74,.75)}
+  50%{box-shadow:0 0 0 4px rgba(210,86,74,.09), 0 0 4px rgba(210,86,74,.30)}
+}
+
+button{
+  font:inherit; font-size:12.5px; height:32px; padding:0 12px;
+  border-radius:8px; border:1px solid var(--line-2);
+  background:var(--panel); color:var(--text); cursor:pointer;
+  display:inline-flex; align-items:center; justify-content:center; gap:6px;
+  white-space:nowrap;
+  transition:background-color .14s var(--ease), border-color .14s var(--ease),
+    color .14s var(--ease), box-shadow .14s var(--ease), transform .08s var(--ease);
+}
+button:hover{background:var(--raised); border-color:var(--line-2); box-shadow:var(--shadow-1)}
+button:active{background:var(--sunk); transform:translateY(.5px)}
+button.primary{
+  background:linear-gradient(180deg, var(--accent-lite), var(--accent));
+  border-color:var(--accent-ink); color:#fbfaf6;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.16), 0 1px 3px rgba(31,68,103,.28);
+}
+button.primary:hover{
+  background:linear-gradient(180deg, #356a9c, #21496d);
+  border-color:var(--accent-ink);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.2), 0 2px 8px rgba(31,68,103,.35);
+}
+button.primary:active{background:var(--accent-ink)}
+button:disabled{color:var(--muted); background:transparent; border-color:var(--line);
+  cursor:not-allowed; box-shadow:none; transform:none}
+button.mini{height:26px; padding:0 9px; font-size:12px; border-radius:6px}
+button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+button.busy{background:var(--accent-soft); border-color:var(--accent); color:var(--accent);
+  cursor:default}
+
+/* 顶栏按钮：深底版。只覆盖 header 里的，别处照旧浅底 */
+header button:not(.primary){
+  background:rgba(255,255,255,.055); color:var(--ink-text);
+  border-color:rgba(255,255,255,.15);
+}
+header button:not(.primary):hover{
+  background:rgba(255,255,255,.11); border-color:rgba(255,255,255,.26);
+  box-shadow:0 1px 4px rgba(0,0,0,.25);
+}
+header button.primary{
+  background:linear-gradient(180deg, #356a9c, #1f4467);
+  border-color:#153350;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.22), 0 2px 10px rgba(21,51,80,.5);
+}
+header button.primary:hover{background:linear-gradient(180deg, #3f78ad, #245079)}
+header button:disabled{
+  background:rgba(255,255,255,.03); color:rgba(255,255,255,.3);
+  border-color:rgba(255,255,255,.08);
+}
+header .lamp{border-color:transparent; background:transparent}
+header .lamp:hover{background:rgba(255,255,255,.08)}
+header .lamp.down:hover{background:rgba(210,86,74,.12)}
+header button.busy{background:rgba(120,160,200,.2); border-color:rgba(160,200,235,.4);
+  color:#cfe2f2}
+
+/* 快捷键提示做成小键帽，一眼能认出这是「按键」而不是正文 */
+.kbd{display:flex; align-items:center; gap:5px; font-size:11.5px; color:var(--muted);
+  white-space:nowrap}
+.kbd kbd{
+  font:12px/1 var(--mono); color:var(--sub); background:var(--bg);
+  border:1px solid var(--line-2); border-bottom-width:2px; border-radius:4px;
+  padding:3px 5px; min-width:20px; text-align:center;
+}
+header .kbd{color:rgba(255,255,255,.42)}
+header .kbd kbd{
+  color:rgba(255,255,255,.82); background:rgba(255,255,255,.07);
+  border-color:rgba(255,255,255,.18); border-bottom-color:rgba(255,255,255,.28);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06);
+}
+
+/* ---- 跑批进度条 ----
+   进度用 scaleX 走，别动 width —— width 会触发重排，弱机器上抖。
+   未完成那段铺斜纹并缓慢流动，已完成那段是实色：一眼分得清「走到哪」和「还剩多少」。 */
+.runbar{
+  display:flex; align-items:center; gap:10px; padding:0 16px; height:34px;
+  background:linear-gradient(180deg, #f2ecdf, var(--raised));
+  border-bottom:1px solid var(--line);
+  font-size:11.5px; color:var(--sub); flex:none;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.6);
+}
+.runbar .rlabel{flex:none; min-width:168px; font-variant-numeric:tabular-nums;
+  color:var(--text); font-weight:500}
 .runbar .rtrack{
-  flex:1; height:7px; border-radius:4px; background:#fff;
-  border:1px solid var(--border); overflow:hidden; min-width:80px;
+  flex:1; height:6px; border-radius:3px; overflow:hidden; min-width:80px;
+  background:
+    repeating-linear-gradient(115deg, rgba(31,27,22,.07) 0 5px, transparent 5px 10px),
+    rgba(31,27,22,.07);
+  box-shadow:inset 0 1px 2px rgba(31,27,22,.14);
+  animation:stripes 1.1s linear infinite;
 }
 .runbar .rfill{
-  display:block; height:100%; width:0; background:var(--accent);
-  transition:width .4s ease;
+  display:block; height:100%; width:100%;
+  background:linear-gradient(90deg, #3d7bb0, var(--accent) 70%, var(--accent-ink));
+  box-shadow:0 0 8px rgba(43,92,138,.45);
+  transform:scaleX(0); transform-origin:left;
+  transition:transform .35s var(--ease);
+  position:relative;
 }
+.runbar .rfill::after{                 /* 头部一点高光，让「正在走」有速度感 */
+  content:''; position:absolute; top:0; right:0; bottom:0; width:2px;
+  background:rgba(255,255,255,.65); box-shadow:0 0 6px rgba(255,255,255,.8);
+}
+@keyframes stripes{to{background-position:20px 0, 0 0}}
 .runbar .retx{
-  flex:none; max-width:42%; overflow:hidden; white-space:nowrap;
-  text-overflow:ellipsis; color:var(--muted); font-family:var(--mono); font-size:11px;
+  flex:none; max-width:38%; overflow:hidden; white-space:nowrap;
+  text-overflow:ellipsis; color:var(--muted); font-family:var(--mono);
+  font-size:11px;
 }
-.runbar.paused .rfill{background:var(--amber)}
-.runbar.paused .rlabel{color:var(--amber)}
-button.busy{background:var(--accent-bg); border-color:var(--accent);
-  color:var(--accent); cursor:default}
+.runbar.paused .rfill{background:linear-gradient(90deg, #b3812c, var(--warn));
+  box-shadow:0 0 8px rgba(138,90,19,.4)}
+.runbar.paused .rtrack{animation:none}
+.runbar.paused .rlabel{color:var(--warn)}
+
+/* ---- 主体三栏 ----
+   **1fr 必须包一层 minmax(0,…)**：原图是 100% 原始像素模式时内联宽度
+   1900+，不夹住会把栅格撑爆，右栏正文被挤成 0 宽（2026-11-06 前的实际故障：
+   1440/1920 下正文整栏看不见）。.pane 也要 min-width:0，双保险。
+   原图栏宽度记在 --mid-w（拖动分隔条才写），没拖过时仍均分。 */
+main{
+  flex:1; display:grid; min-height:0;
+  grid-template-columns:var(--aside-w,320px) 4px minmax(0,var(--mid-w,1fr)) 4px minmax(0,1fr);
+}
+/* 分隔条：平时只是一道纸缝，悬停才浮出一枚「抓得住」的点 */
+.splitter{cursor:col-resize; background:transparent; position:relative;
+  border-left:1px solid var(--line)}
+.splitter::before{
+  content:''; position:absolute; top:50%; left:50%; width:2px; height:26px;
+  transform:translate(-50%,-50%); border-radius:2px;
+  background:none; transition:background-color .16s var(--ease), box-shadow .16s var(--ease);
+}
+.splitter:hover{background:linear-gradient(180deg, transparent, var(--accent-soft), transparent)}
+.splitter:hover::before{background:var(--accent); box-shadow:0 0 6px rgba(31,68,103,.4)}
+.splitter.dragging{background:var(--accent-soft)}
+.splitter.dragging::before{background:var(--accent)}
+.splitter::after{content:''; position:absolute; inset:0 -4px}
+
+/* ---- 左：队列 ---- */
+aside{
+  background:
+    radial-gradient(120% 60% at 0% 0%, rgba(184,137,47,.055), transparent 60%),
+    linear-gradient(180deg, #fefcf8, #faf6ee);
+  display:flex; flex-direction:column;
+  min-height:0; min-width:0;
+  border-right:1px solid var(--line);
+}
+/* 六个队列排成 3×2：单行放不下（330px 里会挤成两行参差的标签），
+   排成格反而齐，而且每格够宽，数字不用挤在字后面。
+   活跃那格压深靛青底、字反白，一眼知道现在在看哪个队列。 */
+.tabs{display:grid; grid-template-columns:repeat(3,1fr); gap:3px;
+  padding:8px 8px 0; flex:none}
+.tabs button{
+  height:32px; padding:0 4px; border:1px solid transparent; border-radius:7px;
+  background:transparent; color:var(--sub); font-size:12px;
+  box-shadow:none;
+}
+.tabs button:hover{background:rgba(31,27,22,.045); border-color:transparent;
+  box-shadow:none; color:var(--text)}
+.tabs button.on{
+  background:linear-gradient(180deg, var(--accent-lite), var(--accent) 60%, var(--accent-ink));
+  border-color:#153350; color:#f7f9fb;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.18), 0 2px 6px rgba(31,68,103,.24);
+}
+.tabs button b{
+  font-family:var(--mono); font-weight:400; font-size:11px; margin-left:1px;
+  color:var(--muted); font-variant-numeric:tabular-nums;
+}
+.tabs button.on b{color:#e8c67a}
+.tabs button.hot b{color:var(--warn); font-weight:600}
+.tabs button.on.hot b{color:#f0c983}
+.tabs button[data-kind="failed"].hot b{color:var(--bad)}
+.tabs button[data-kind="failed"].on.hot b{color:#f3b1a7}
+
+.filter{padding:8px 8px 10px; display:flex; gap:4px; flex:none}
+.filter input{
+  flex:1; min-width:0; font:inherit; font-size:12px; height:28px; padding:0 8px;
+  border:1px solid var(--line); border-radius:6px; background:#fffdf9;
+  color:var(--text); outline:none;
+  box-shadow:inset 0 1px 2px rgba(31,27,22,.05);
+  transition:border-color .14s var(--ease), box-shadow .14s var(--ease);
+}
+.filter input::placeholder{color:var(--muted)}
+.filter input:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-wash)}
+/* 搜索范围开关：页·名（走数据库，筛文件名和页号）↔ 正文（扫全书 md） */
+.filter .qmode{
+  flex:none; height:28px; font-size:11.5px; padding:0 8px; background:#fffdf9;
+  color:var(--sub); border:1px solid var(--line); border-radius:6px;
+}
+.filter .qmode.on{background:var(--accent-soft); color:var(--accent);
+  border-color:var(--accent); font-weight:500;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+
+/* 批量操作条：勾了页才出现，两行 —— 一行「选了多少」，一行「要做什么」。 */
+.batchbar{
+  padding:8px; flex:none;
+  background:linear-gradient(180deg, #edf3f8, #e4ecf4);
+  border-top:1px solid rgba(31,68,103,.18);
+  border-bottom:1px solid rgba(31,68,103,.16);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7), inset 3px 0 0 var(--accent);
+}
+.batchbar .brow{display:flex; align-items:center; gap:4px; flex-wrap:wrap}
+.batchbar .brow + .brow{margin-top:4px}
+.batchbar .bcount{font-size:12px; color:var(--accent); font-weight:600;
+  font-variant-numeric:tabular-nums; letter-spacing:.01em}
+.batchbar button{flex:none}
+/* 只给非 primary 的按钮上底色 —— 写成 .batchbar button 会盖掉 .primary 的填充，
+   「核对」就变成一块白板（2026-11-06 组件检视抓到的）。 */
+.batchbar button:not(.primary){background:rgba(255,255,255,.86); border-color:rgba(31,68,103,.22);
+  color:var(--accent-ink)}
+.batchbar button:not(.primary):hover{background:#fff; border-color:rgba(31,68,103,.4)}
+
+.list{overflow:auto; flex:1; min-height:0}
+/* 一行 34：6px 的状态点、44px 页码、右对齐字数，列列对齐。
+   悬停露出文件名（单卷书文件名就是页号，平时没信息量）。 */
+.item{display:flex; align-items:center; gap:8px; height:34px; padding:0 12px;
+  cursor:pointer; border-left:2px solid transparent; font-size:12.5px;
+  transition:background-color .12s var(--ease), border-color .12s var(--ease)}
+.item:hover{background:rgba(184,137,47,.07); border-left-color:rgba(184,137,47,.5)}
+.item.active{
+  background:linear-gradient(90deg, var(--accent-wash), rgba(240,245,250,.25));
+  border-left:3px solid var(--accent); padding-left:11px;
+}
+.item.active .pid{color:var(--accent); font-weight:600}
+.item.sel{background:rgba(31,68,103,.06)}
+.item.sel.active{background:var(--accent-soft)}
+.item .ck{flex:none; width:13px; height:13px; margin:0; cursor:pointer;
+  accent-color:var(--accent)}
+.item .pid{font-family:var(--mono); font-size:11.5px; color:var(--sub);
+  width:44px; flex:none; font-variant-numeric:tabular-nums}
+.item .fname{display:none; flex:1; min-width:0; font-size:11px; color:var(--muted);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.item:hover .fname{display:inline-block}
+.item:hover .chars{display:none}
+.list.filtering .item .fname{display:inline-block}
+.list.filtering .item .chars{display:none}
+.item .chars{font-family:var(--mono); font-size:11px; color:var(--muted);
+  margin-left:auto; flex:none; font-variant-numeric:tabular-nums}
+.item .chars.z{color:var(--bad); font-weight:600}   /* 0 字：空白页嫌疑，标出来 */
+.item .chars.q{color:var(--warn)}                   /* 1~9 字：可能只剩页脚/署名 */
+/* 通道标记做成胶囊，VL 那颗用赭石底，跟 GLM 的中性底分开 */
+.item .tag{font-size:10px; height:15px; padding:0 5px; border-radius:999px;
+  flex:none; display:inline-flex; align-items:center; letter-spacing:.03em;
+  background:transparent; color:var(--muted); border:1px solid var(--line-2)}
+.item .tag.vl{color:var(--warn); border-color:rgba(138,90,19,.34);
+  background:rgba(138,90,19,.07)}
+.item .tag.glm{color:var(--sub); border-color:var(--line-2);
+  background:rgba(31,27,22,.04)}
+/* 有备注的页：一个小方块，别用 emoji（不同机器渲染成彩色图标更乱） */
+.item .note{width:6px; height:6px; background:var(--gold); flex:none;
+  transform:rotate(45deg); box-shadow:0 0 0 2px rgba(184,137,47,.16)}
+/* 核对过 = 一枚朱印。别用 ✓ —— 同一个勾在「批量核对」「已核对」「勾选框」
+   三处含义不同，看着像一回事。
+   做法照真印章来：一点斜度、一圈内白线、底面不是纯色而是两档红。 */
+.seal{
+  width:16px; height:16px; flex:none; border-radius:2px;
+  background:linear-gradient(155deg, var(--seal-lite), #8b2f24);
+  color:#fdf8f2;
+  font-family:var(--serif); font-size:11px; line-height:16px; text-align:center;
+  letter-spacing:0; transform:rotate(-4deg);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.45), 0 1px 2px rgba(120,40,30,.35);
+  text-shadow:0 1px 0 rgba(0,0,0,.18);
+}
+/* 正文搜索时文件名没意义，位置留给片段 */
+.list.searching .item .fname{display:none}
+.list.searching .item:hover .chars{display:inline-block}
+.item.two{flex-wrap:wrap; align-items:flex-start; height:auto; padding:8px 12px}
+.item.two .snip{flex-basis:100%; font-size:11.5px; color:var(--sub); line-height:1.55;
+  padding:0 0 0 47px; overflow:hidden; display:-webkit-box;
+  -webkit-line-clamp:2; -webkit-box-orient:vertical}
+.item.two .snip mark{background:#f6e3b8; color:var(--text); padding:0 1px; border-radius:2px;
+  box-shadow:0 0 0 1px rgba(184,137,47,.28)}
+.dot{width:6px; height:6px; border-radius:50%; background:var(--line-2); flex:none}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+.dot.warn{box-shadow:0 0 0 2px rgba(138,90,19,.14)}
+.dot.bad{box-shadow:0 0 0 2px rgba(152,50,42,.14)}
+
+.pager{display:flex; align-items:center; gap:6px; padding:6px 8px;
+  border-top:1px solid var(--line); font-size:11.5px; color:var(--muted); flex:none;
+  background:linear-gradient(180deg, rgba(255,255,255,.5), rgba(239,233,223,.5))}
+.pager button{height:24px; padding:0 8px; font-size:12px}
+.pager span{flex:1; text-align:center; font-family:var(--mono);
+  font-variant-numeric:tabular-nums}
+
+/* ---- 中：原图 = 灯箱 ----
+   扫描件是白纸，搁在浅色底上边界会糊；压深之后纸才「浮」起来，
+   这也正是拿一张片子对着灯看的样子。 */
+.pane{display:flex; flex-direction:column; min-height:0; min-width:0;
+  background:var(--panel)}
+/* 不锁死高度：栏窄时按钮换到第二行，别把按钮挤出可视区（body 是 overflow:hidden，
+   挤出去就点不到了）。宽屏下仍是一行 40。 */
+.pane-head{display:flex; align-items:center; gap:8px; padding:6px 12px;
+  border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, #fffdf9, var(--panel));
+  font-size:11.5px; color:var(--sub); min-height:40px; flex:none;
+  flex-wrap:wrap; min-width:0;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9), 0 1px 3px rgba(31,27,22,.04)}
+/* 抬头小色标：中栏金（影像）、右栏靛（文字）。一眼分清哪边是纸哪边是字 */
+.pane-head::before{
+  content:''; flex:none; width:3px; height:14px; border-radius:2px;
+  background:var(--gold); box-shadow:0 0 0 2px rgba(184,137,47,.12);
+}
+main > .pane:nth-of-type(2) .pane-head::before{
+  background:var(--accent); box-shadow:0 0 0 2px rgba(31,68,103,.12);
+}
+.pane-head .spacer{flex:1}
+.pane-head > span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+#imgzoom{font-family:var(--mono); color:var(--muted); font-size:11px; flex:none;
+  padding:1px 6px; border-radius:999px; background:rgba(31,27,22,.05)}
+/* 右栏抬头带状态色：待人工赭、失败朱、其余墨色 —— 比一个灰色标签好认 */
+#state{font-size:12px; color:var(--sub)}
+#state.st-review{color:var(--warn); font-weight:500}
+#state.st-failed{color:var(--bad); font-weight:500}
+#state.st-done{color:var(--text)}
+/* 长得像 mini 按钮的链接（原图：走 href，不开新逻辑） */
+.minilink{
+  height:26px; padding:0 9px; border:1px solid var(--line-2); border-radius:6px;
+  display:inline-flex; align-items:center; font-size:12px; color:var(--sub);
+  text-decoration:none;
+  transition:background-color .14s var(--ease), border-color .14s var(--ease),
+    color .14s var(--ease), box-shadow .14s var(--ease);
+}
+.minilink:hover{background:var(--raised); color:var(--text); box-shadow:var(--shadow-1)}
+/* 写过备注的页，按钮变色 —— 否则每次都要点开才知道有没有 */
+#notebtn.has{color:var(--warn); border-color:rgba(138,90,19,.4);
+  background:rgba(138,90,19,.06)}
+
+/* 相邻页预览：上一页的结尾 / 下一页的开头，点一下跳过去。 */
+.peek{padding:4px 12px; border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, #f6f1e7, #faf6ee);
+  flex:none; display:flex; flex-direction:column; gap:0;
+  font-size:11.5px; color:var(--muted); overflow:hidden}
+.peek .pk{white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  cursor:pointer; line-height:22px; border-radius:4px; padding:0 4px; margin:0 -4px;
+  transition:color .12s var(--ease), background-color .12s var(--ease)}
+.peek .pk:hover{color:var(--accent); background:var(--accent-wash)}
+.peek .pk .who{font-family:var(--mono); color:var(--sub); margin-right:8px}
+.peek .pk.none{display:none}
+.peek.off{display:none}
+
+/* 灯箱本体：中间偏上一点亮，像射灯打下来；四周压深，边界自然消失 */
+.imgwrap{
+  flex:1; overflow:auto; display:flex;
+  align-items:flex-start; justify-content:center; padding:18px;
+  background:
+    radial-gradient(120% 90% at 50% -10%, #3a352d 0%, #262118 42%, #17130f 100%);
+  box-shadow:inset 0 0 60px rgba(0,0,0,.55);
+}
+.imgwrap img{
+  background:#fff; max-width:100%; cursor:zoom-in;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,.10),
+    0 2px 6px rgba(0,0,0,.5),
+    0 18px 48px rgba(0,0,0,.55);
+}
+/* 原始像素：图比栏宽，靠滚动看。这时不能再居中 —— flex 居中的溢出部分
+   左边滚不到，会把图左半边吃掉。 */
+.imgwrap.zoom{justify-content:flex-start; cursor:zoom-out}
+.imgwrap.zoom img{max-width:none}
+.imgwrap .empty{color:rgba(255,255,255,.42); text-align:center; margin:auto;
+  line-height:2; font-size:12.5px}
+.imgwrap .empty .emptybox{color:rgba(255,255,255,.42)}
+.imgwrap .empty .emptybox .big{color:rgba(255,255,255,.75)}
+
+/* ---- 右：正文 = 校样纸 ----
+   这一栏是「纸」：暖白、衬线、宽行距、页边留白，加一条朱红校样线。
+   整屏最该被认真对待的东西在这里，所以别的部分都退到中性或暗处去。 */
+.textwrap{
+  flex:1; overflow:auto; padding:26px 30px 40px 40px;
+  position:relative;
+  /* 纸的暖调靠两团极淡的偏色叠出来，别用稿纸横线：
+     38px 行高与 34px 线距必然错位，线正好卡在字行之间，读起来像表格。 */
+  background:
+    radial-gradient(120% 80% at 100% 0%, rgba(184,137,47,.045), transparent 62%),
+    radial-gradient(90% 60% at 0% 100%, rgba(31,68,103,.030), transparent 58%),
+    linear-gradient(180deg, #fffdf9, #fbf7ef 70%, #f9f4ea);
+}
+/* 校样线：印刷厂在页边拉的一条红线，写着「这里是正文区」 */
+.textwrap::before{
+  content:''; position:absolute; top:0; bottom:0; left:20px; width:1px;
+  background:linear-gradient(180deg,
+    rgba(156,58,46,0), rgba(156,58,46,.30) 12%, rgba(156,58,46,.30) 88%,
+    rgba(156,58,46,0));
+  pointer-events:none;
+}
+.textwrap::after{                 /* 顶部一层纸的暗边，滚动内容不会硬顶到头 */
+  content:''; position:absolute; top:0; left:0; right:0; height:14px;
+  background:linear-gradient(180deg, rgba(31,27,22,.05), transparent);
+  pointer-events:none;
+}
+.text{font-family:var(--serif); font-size:19px; line-height:2;
+  white-space:pre-wrap; word-break:break-all; letter-spacing:.02em;
+  max-width:31em; color:var(--text); outline:none;
+  position:relative; z-index:1;
+}
+textarea{
+  width:100%; min-height:100%; border:none; outline:none; resize:none;
+  font-family:var(--serif); font-size:19px; line-height:2; letter-spacing:.02em;
+  background:transparent; color:var(--text); padding:0;
+  position:relative; z-index:1;
+}
+.empty{color:var(--muted); font-size:13px; line-height:1.9}
+.emptybox{padding:32px 16px; text-align:center; color:var(--muted)}
+.emptybox .big{font-size:12.5px; color:var(--text); margin-bottom:4px}
+
+/* 状态栏：左边「这一页是什么」，右边「核没核过」。中间用小圆点分组，
+   不再用一排彩色药丸 —— 药丸一多就谁都不突出。 */
+.statbar{display:flex; gap:12px; align-items:center; padding:0 14px;
+  border-top:1px solid var(--line);
+  background:linear-gradient(180deg, #f8f3e9, #f1ebdf);
+  height:40px;
+  font-size:11.5px; color:var(--sub); flex-wrap:nowrap; flex:none; min-width:0;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7)}
+.statbar .sb-l{display:flex; gap:8px; align-items:center; min-width:0;
+  overflow:hidden; white-space:nowrap}
+.statbar .sb-r{display:flex; gap:8px; align-items:center; margin-left:auto;
+  flex:0 1 auto; min-width:0; overflow:hidden; white-space:nowrap}
+.sep{width:3px; height:3px; border-radius:50%; background:rgba(31,27,22,.28);
+  flex:none}
+.statbar b{font-weight:500; color:var(--text); font-variant-numeric:tabular-nums}
+.sb-id{font-family:var(--mono); color:var(--text); font-weight:500;
+  padding:1px 6px; border-radius:4px; background:rgba(31,27,22,.05)}
+.sb-tag{color:var(--muted)}
+.sb-num{color:var(--sub)}
+.sb-meta{font-family:var(--mono); color:var(--muted)}
+.sb-warn{color:var(--warn); min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap}
+.sb-bad{color:var(--bad); min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap}
+.sb-ok{color:#7a3f36; display:inline-flex; align-items:center; gap:6px;
+  padding:1px 9px 1px 5px; border-radius:999px;
+  background:rgba(156,58,46,.065); border:1px solid rgba(156,58,46,.18)}
+.statbar .hint{font-size:11.5px; color:var(--muted)}
+
+/* ---- 提示 ---- */
+.toast{position:fixed; left:50%; bottom:28px; transform:translate(-50%,10px);
+  background:linear-gradient(180deg, #2b241d, #1d1813); color:#f7f2e8;
+  font-size:12.5px; padding:10px 16px 10px 14px;
+  border-radius:9px; opacity:0; pointer-events:none;
+  border-left:3px solid var(--gold);
+  transition:opacity .18s var(--ease), transform .18s var(--ease); z-index:70;
+  max-width:70vw;
+  box-shadow:0 10px 30px rgba(31,27,22,.32), inset 0 1px 0 rgba(255,255,255,.08)}
+.toast.show{opacity:1; transform:translate(-50%,0)}
+.toast.err{background:linear-gradient(180deg, #a33a2c, #83291f); border-left-color:#f0c27a}
+
+/* ---- 对话框 ---- */
+dialog{
+  border:1px solid var(--line-2); border-radius:16px; padding:0;
+  /* 顶部那条三色线用背景画，不用 ::before —— 圆角会把背景一起裁掉，
+     ::before 则会在两个圆角处露出两个毛边尖角（2026-11-06 截图抓到）。 */
+  background:
+    linear-gradient(90deg, rgba(156,58,46,.62), rgba(184,137,47,.62) 46%,
+      rgba(31,68,103,.62)) top / 100% 3px no-repeat,
+    linear-gradient(180deg, #fffdfa, var(--panel));
+  color:var(--text); width:min(560px,92vw);
+  box-shadow:0 28px 70px rgba(31,27,22,.28), 0 2px 8px rgba(31,27,22,.12);
+}
+dialog::backdrop{background:rgba(21,26,32,.42); backdrop-filter:blur(2px)}
+dialog form, dialog .dlgwrap{padding:20px; position:relative}
+dialog h2{font-family:var(--serif); font-size:15px; font-weight:500;
+  letter-spacing:.04em; margin:4px 0 6px}
+dialog .hint{font-size:12px; color:var(--sub); line-height:1.7; margin:0 0 16px}
+dialog label{display:block; font-size:12px; color:var(--sub); margin:12px 0 4px}
+dialog .faint{color:var(--muted)}
+dialog input{
+  width:100%; font:inherit; font-size:12.5px; font-family:var(--mono);
+  height:32px; padding:0 9px; border-radius:8px; border:1px solid var(--line-2);
+  background:#fffdf9; color:var(--text);
+  box-shadow:inset 0 1px 2px rgba(31,27,22,.05);
+}
+dialog input:focus{outline:none; border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-wash)}
+.dlgfoot{display:flex; justify-content:flex-end; gap:6px; margin-top:20px}
+
+/* 对话框里的 textarea 不能用正文那套（font-size:19px、min-height:100% 会撑爆弹窗） */
+dialog textarea{
+  width:100%; min-height:0; resize:vertical;
+  font-family:system-ui,"Microsoft YaHei",sans-serif; font-size:12.5px; line-height:1.75;
+  letter-spacing:0; padding:8px 10px; border-radius:8px;
+  border:1px solid var(--line-2); background:#fffdf9; color:var(--text);
+  box-shadow:inset 0 1px 2px rgba(31,27,22,.05);
+}
+dialog textarea:focus{outline:none; border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--accent-wash)}
+
+/* 历史版本列表 */
+.histlist{display:flex; flex-direction:column; gap:6px;
+  max-height:46vh; overflow:auto; margin-top:4px}
+.hrow{display:flex; gap:10px; align-items:flex-start; padding:8px 10px;
+  border:1px solid var(--line); border-radius:8px; background:#fffdf9;
+  transition:border-color .14s var(--ease), box-shadow .14s var(--ease)}
+.hrow:hover{border-color:var(--line-2); box-shadow:var(--shadow-1)}
+.hrow .ht{font-family:var(--mono); font-size:11.5px; color:var(--text); flex:none}
+.hrow .hd{flex:1; min-width:0}
+.hrow .hm{font-size:11px; color:var(--muted); font-family:var(--mono)}
+.hrow .hp{font-size:12px; color:var(--sub); line-height:1.6; margin-top:2px;
+  overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical}
+.hrow button{flex:none}
+
+/* 日志面板：终端式深底，在一堆浅色弹窗里反而最好认 */
+.logbox{max-height:54vh; overflow:auto; margin:0; padding:12px 14px;
+  background:linear-gradient(180deg, #1c242c, #141a20);
+  border:1px solid #0b1014; border-radius:9px;
+  font-family:var(--mono); font-size:11.5px; line-height:1.65; color:#c3d2de;
+  white-space:pre-wrap; word-break:break-all;
+  box-shadow:inset 0 2px 12px rgba(0,0,0,.5)}
+
+/* ---- 导出前体检 ---- */
+.prelist{display:flex; flex-direction:column; gap:6px}
+.prow{display:flex; gap:9px; align-items:flex-start; font-size:12.5px; line-height:1.7;
+  padding:9px 11px; border-radius:8px; background:#fffdf9; border:1px solid var(--line)}
+.prow .lv{flex:none; width:3px; align-self:stretch; border-radius:2px; background:var(--line-2)}
+.prow.bad .lv{background:var(--bad); box-shadow:0 0 6px rgba(152,50,42,.35)}
+.prow.warn .lv{background:var(--warn)}
+.prow.ok{background:transparent; border-color:transparent; color:var(--ok);
+  justify-content:center}
+.prow b{font-weight:500}
+.prow .pn{font-family:var(--mono); font-size:11.5px; color:var(--muted);
+  margin-top:2px; word-break:break-all}
+
+/* ---- 滚动条：细、暖灰，别抢眼 ---- */
+*::-webkit-scrollbar{width:10px; height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{
+  background:rgba(31,27,22,.16); border-radius:6px;
+  border:2px solid transparent; background-clip:padding-box;
+}
+*::-webkit-scrollbar-thumb:hover{
+  background:rgba(31,27,22,.30); border:2px solid transparent; background-clip:padding-box;
+}
+/* 灯箱是深底，滚动条要反过来 */
+.imgwrap::-webkit-scrollbar-thumb{
+  background:rgba(255,255,255,.22); border:2px solid transparent; background-clip:padding-box;
+}
+.imgwrap::-webkit-scrollbar-thumb:hover{
+  background:rgba(255,255,255,.4); border:2px solid transparent; background-clip:padding-box;
+}
+
+@media (max-width:1520px){ #keyhint{display:none} }
+@media (max-width:1180px){ .counter{display:none} }
+@media (max-width:1280px){ .lamp .lamptx{display:none} .lamp{padding:0 6px} }

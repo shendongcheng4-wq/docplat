@@ -3,19 +3,22 @@
 <head>
 <meta charset="utf-8">
 <title>文档校对工作台 · docplat</title>
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={{ asset_ver }}">
 </head>
 <body>
 
 <header>
-  <h1>文档校对工作台</h1>
+  <h1><span class="brand-seal" aria-hidden="true">校</span>文档校对工作台</h1>
   <select id="docsel" title="切换文档"></select>
-  <span class="badge" id="counter">—</span>
+  <span class="counter" id="counter">—</span>
   <div class="spacer"></div>
-  <button class="mini primary" id="runbtn" title="按页序识别所有还没处理的页">开始识别</button>
-  <button class="mini" id="importbtn" title="把磁盘上一个图片文件夹加入待处理">导入</button>
-  <button class="mini" id="exportbtn" title="按页序合并成一份 txt，直接写到 桌面\书籍导出\&lt;丛书&gt;\&lt;卷&gt;.txt">导出全书</button>
-  <span class="badge" id="keyhint">↑↓ 翻页 · Enter 编辑 · Esc 取消</span>
+  <button class="primary" id="runbtn" title="按页序识别所有还没处理的页">开始识别</button>
+  <button id="importbtn" title="把磁盘上一个图片文件夹加入待处理">导入</button>
+  <button id="exportbtn" title="按页序合并成一份 txt，直接写到 桌面\书籍导出\&lt;丛书&gt;\&lt;卷&gt;.txt">导出全书</button>
+  <button class="lamp idle" id="lamp" title="识别服务（GLM 8081）状态：检测中">
+    <span class="lampdot"></span><span class="lamptx">识别服务</span>
+  </button>
+  <span class="kbd" id="keyhint"><kbd>↑↓</kbd>翻页<kbd>x</kbd>勾选<kbd>Enter</kbd>编辑</span>
 </header>
 
 <div class="runbar" id="runbar" style="display:none">
@@ -30,14 +33,34 @@
   <aside>
     <div class="tabs" id="tabs">
       <button data-kind="review" class="on" title="机器判为可疑、还没人核对过的页（只算当前选中的这一卷）">待人工 <b id="n-review">0</b></button>
-      <button data-kind="escalated" title="结构闸门判为分格条目、等着换 PaddleOCR-VL 重跑的页（只算当前选中的这一卷；全书总量见顶部进度条）">升级 <b id="n-escalated">0</b></button>
+      <button data-kind="escalated" title="等着换 PaddleOCR-VL 重跑的页：结构闸门判为分格条目的，加上你在待人工里手动「转 VL」的（只算当前选中的这一卷；全书总量见顶部按钮）">升级 <b id="n-escalated">0</b></button>
       <button data-kind="failed" title="重试到上限仍然没跑通的页（只算当前选中的这一卷）">失败 <b id="n-failed">0</b></button>
       <button data-kind="lowscore" title="过了闸门但自评分低，抽查看这些（只算当前选中的这一卷）">低分 <b id="n-lowscore">0</b></button>
       <button data-kind="sample" title="从已识别页里随机抽 20 页，验证闸门本身没漏（只算当前选中的这一卷）">抽检 <b id="n-sample">0</b></button>
       <button data-kind="all" title="当前选中的这一卷全部页">全部 <b id="n-all">0</b></button>
     </div>
     <div class="filter">
-      <input id="q" placeholder="按文件名或页号筛选，回车生效">
+      <input id="q" placeholder="筛页号或文件名，回车生效">
+      <!-- 搜正文：以前想找「某句话在第几页」只能一页页点开看 -->
+      <button class="qmode" id="qmode" title="切换搜索范围：文件名/页号 ↔ 全书正文">页·名</button>
+    </div>
+    <!-- 勾了两页以上才出现。核一本书的待人工常常是几十页，
+         一页一次点击太费手，勾选后一次提交。 -->
+    <div class="batchbar" id="batchbar" style="display:none">
+      <div class="brow">
+        <span class="bcount" id="bcount">已选 0 页</span>
+        <div class="spacer"></div>
+        <button class="mini" id="ballbtn" title="把当前列表这一批页全勾上（不含翻页外的）">全选本页</button>
+        <button class="mini" id="bclearbtn">清除</button>
+      </div>
+      <div class="brow">
+        <button class="mini primary" id="bverify"
+                title="这 N 页都看过了，从待人工队列移除">核对</button>
+        <button class="mini" id="bvl"
+                title="这 N 页换个模型读：排进 VL 队列（待人工里 GLM 读不了的点线页/图版页用这个）">转 VL 跑</button>
+        <button class="mini" id="bblank"
+                title="这 N 页是空白页：清空正文、记为已核对（原文备份到 data/_quarantine）">标为空白</button>
+      </div>
     </div>
     <div class="list" id="list"></div>
     <div class="pager">
@@ -52,24 +75,36 @@
   <section class="pane">
     <div class="pane-head">
       <span id="imginfo">—</span>
+      <span id="imgzoom"></span>
       <div class="spacer"></div>
       <button class="mini" onclick="zoom()" id="zoombtn">放大</button>
-      <a id="imgopen" class="hint" target="_blank" style="text-decoration:none">原图 ↗</a>
+      <a class="minilink" id="imgopen" target="_blank" title="在新标签打开原图">原图</a>
     </div>
     <div class="imgwrap" id="imgwrap">
       <div class="empty">选择左侧任一页开始</div>
     </div>
   </section>
 
+  <div class="splitter" id="splitter2" title="拖动调整原图栏宽度（双击复位）"></div>
+
   <section class="pane">
     <div class="pane-head">
       <span id="state">—</span>
       <div class="spacer"></div>
-      <button class="mini" id="rerunbtn" onclick="rerunPage()"
-              title="用当前渠道重跑这一页，其他页不受影响">重跑本页</button>
-      <button class="mini" id="verifybtn" onclick="toggleVerified()" style="display:none">✓ 已核对</button>
+      <button class="mini" id="verifybtn" onclick="toggleVerified()" style="display:none">核对</button>
       <button class="mini" id="editbtn" onclick="toggleEdit()">编辑</button>
       <button class="mini primary" id="savebtn" onclick="savePage()" style="display:none">保存</button>
+      <button class="mini" id="histbtn" onclick="openHistory()"
+              title="这一页改过的历史版本，改错了可以恢复">历史</button>
+      <button class="mini" id="notebtn" onclick="openNote()"
+              title="页级备注：不影响正文，也不改变核对状态">备注</button>
+      <button class="mini" id="rerunbtn" onclick="openRerun()"
+              title="重跑这一页：可选 GLM（当场跑）或 PaddleOCR-VL（排进 VL 队列）">重跑</button>
+    </div>
+    <!-- 跨页接续的句子要对照上一页末尾：点一下直接跳过去，不用回左栏找 -->
+    <div class="peek" id="peek" style="display:none">
+      <div class="pk prev" id="peekprev" title="上一页的结尾，点击跳过去"></div>
+      <div class="pk next" id="peeknext" title="下一页的开头，点击跳过去"></div>
     </div>
     <div class="textwrap">
       <div class="text" id="text"><div class="empty">—</div></div>
@@ -80,6 +115,72 @@
 </main>
 
 <div class="toast" id="toast"></div>
+
+<!-- 重跑：选模型。以前只有一条路（原通道），GLM 读不了的页（目录点线死循环、
+     图版被当表格拆）就只能去命令行；2026-11-06 用户要「重跑要能换模型」。 -->
+<dialog id="rerundlg">
+  <div class="dlgwrap">
+    <h2>重跑这一页</h2>
+    <p class="hint" id="rerunsum">—</p>
+    <div class="dlgfoot">
+      <button onclick="document.getElementById('rerundlg').close()">取消</button>
+      <button id="rerunglm">用 GLM 重跑</button>
+      <button class="primary" id="rerunvl">换 PaddleOCR-VL</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 导出体检：export() 会把「还没跑出结果」的页静默跳过，txt 里不写页数，
+     少了几页肉眼看不出来。所以导出前先把这些页摆出来，让用户自己定。 -->
+<dialog id="predlg">
+  <form method="dialog">
+    <h2>导出前看一眼</h2>
+    <p class="hint" id="presum">—</p>
+    <div class="prelist" id="prelist"></div>
+    <div class="dlgfoot">
+      <button value="cancel">取消</button>
+      <button class="primary" value="go" id="prego">仍然导出</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 历史版本：save_text 是直接覆盖，改错一次就回不去。每次覆盖前留一份，
+     这里列出来，点一下就能恢复（恢复本身也会再留一份，能反悔两次）。 -->
+<dialog id="histdlg">
+  <div class="dlgwrap">
+    <h2>历史版本</h2>
+    <p class="hint" id="histsum">—</p>
+    <div class="histlist" id="histlist"></div>
+    <div class="dlgfoot">
+      <button onclick="document.getElementById('histdlg').close()">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="notedlg">
+  <div class="dlgwrap">
+    <h2>页级备注</h2>
+    <p class="hint" id="notesum">—</p>
+    <textarea id="notebody" rows="6" spellcheck="false"
+      placeholder="例如：原图此处糊，疑为「戊」／这一页是插图，不必识别"></textarea>
+    <div class="dlgfoot">
+      <button onclick="document.getElementById('notedlg').close()">取消</button>
+      <button class="primary" id="noteok">保存备注</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="logdlg">
+  <div class="dlgwrap">
+    <h2>识别日志</h2>
+    <p class="hint" id="logpath">—</p>
+    <pre class="logbox" id="logbox"></pre>
+    <div class="dlgfoot">
+      <button id="logrefresh">刷新</button>
+      <button onclick="document.getElementById('logdlg').close()">关闭</button>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="impdlg">
   <form id="impform">
@@ -92,12 +193,12 @@
     <label for="impdoc">文档号 <span class="faint">（留空自动取卷名；同一目录重复导入会复用原文档）</span></label>
     <input id="impdoc" spellcheck="false" autocomplete="off" placeholder="留空即可">
     <div class="dlgfoot">
-      <button class="mini" id="impcancel" value="cancel">取消</button>
-      <button class="mini primary" id="impok" value="ok">开始导入</button>
+      <button id="impcancel" value="cancel">取消</button>
+      <button class="primary" id="impok" value="ok">开始导入</button>
     </div>
   </form>
 </dialog>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ asset_ver }}"></script>
 </body>
 </html>
