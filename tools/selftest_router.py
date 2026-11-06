@@ -150,7 +150,27 @@ def main():
         print(f"✓ 队列清空：{c}")
         ok += 1
 
-        print(f"\n全部通过（{ok}/6）")
+        # 「重跑本页」不许换模型、不许进升级队列（2026-11-06 用户定：
+        # 待人工的图片只有重跑这个选项，不能升级换模型跑）。
+        # 这里故意让重跑的结果是分格文本：闸门若还开着，这页会被改成
+        # channel=vl / pending，下一轮「换 VL 重跑 N」就把它批量换模型跑掉了。
+        store.set_page("t", h, layout="text", channel="glm", status="review",
+                       err="疑似重复生成")
+        pipeline.get_engine = lambda ch: FakeEngine(ch, plan)
+        try:
+            st4 = pipeline.rerun_one("t", h)
+        finally:
+            pipeline.get_engine = orig
+        pg = store.get_page("t", h)
+        assert st4["escalate"] == 0, st4
+        assert pg["channel"] == "glm", pg
+        assert pg["status"] in ("done", "review"), pg
+        assert h not in [p["hash"] for p in store.queue("t", "escalated", 99)]
+        print(f"✓ 重跑不换模型：通道仍 {pg['channel']}、状态 {pg['status']}，"
+              f"没被闸门抓去 vl")
+        ok += 1
+
+        print(f"\n全部通过（{ok}/7）")
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

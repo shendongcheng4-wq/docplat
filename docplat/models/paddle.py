@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 from .. import config as C
+from .. import imgio
 from ..legacy import extract_text, is_path_echo
 from .base import Engine, EngineError, Recognition
 
@@ -65,7 +66,8 @@ class PaddleEngine(Engine):
 
     def recognize(self, img: Path, hint: str = "") -> Recognition:
         eng = self._build()
-        src = self._shrink(img)
+        # 倒置页先正过来再缩：VL 也读裸像素，方向标记对它无效
+        src = self._shrink(imgio.upright(img))
         t0 = time.time()
         raw = eng.predict(str(src))
         sec = time.time() - t0

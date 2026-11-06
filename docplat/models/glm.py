@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from .. import config as C
+from .. import imgio
 from ..legacy import clean_output
 from .base import Engine, EngineError, Recognition
 
@@ -44,16 +45,21 @@ class GlmEngine(Engine):
         except EngineError:
             return False
 
-    def recognize(self, img: Path, hint: str = "") -> Recognition:
+    def recognize(self, img: Path, hint: str = "", prompt: str = "") -> Recognition:
         model = self._resolve_model()
-        b64 = base64.b64encode(Path(img).read_bytes()).decode()
-        mime = "image/png" if str(img).lower().endswith(".png") else "image/jpeg"
+        # 按 EXIF 方向先正过来：倒置页会把图注/表格里的小字成片读丢（p0119）
+        src = imgio.upright(img)
+        b64 = base64.b64encode(Path(src).read_bytes()).decode()
+        mime = "image/png" if str(src).lower().endswith(".png") else "image/jpeg"
         payload = json.dumps({
             "model": model,
             "messages": [{"role": "user", "content": [
                 # 表格提示词目前与正文相同 —— GLM 的 table detection 官方标注为
                 # Limited，换提示词也救不回来，最终仍要回落 Paddle。
-                {"type": "text", "text": C.GLM_PROMPT},
+                # （2026-11-05 更正：默认那版确实救不回来，但一句中文表格指令能 ——
+                #   复杂表格换成 config.GLM_TABLE_PROMPT 后会吐完整 HTML 表，
+                #   只在输出退化成空单元格时由 pipeline 触发。）
+                {"type": "text", "text": prompt or C.GLM_PROMPT},
                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
             ]}],
             "temperature": 0,

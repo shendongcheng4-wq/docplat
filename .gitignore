@@ -6,6 +6,8 @@ _tmp/
 
 # ---- 运行产物 ----
 *.log
+# 手动起 glm 引擎时重定向的 `_glm_run.out/_glm_run.err`
+_glm_run.*
 *.db
 *.db-journal
 *.db-wal
@@ -16,6 +18,10 @@ _tmp/
 python_path.txt
 # 模型与 llama.cpp 的实际位置（见 scripts/glm_serve.py）
 scripts/local.conf
+
+# 透印判据的回归样本：内容取自本机书籍（书名/页号/图片路径），与 data/ 同理不能进仓库。
+# 自己生成：python tools/make_bleed_fixture.py --write
+tests/fixtures/bleed_cases.json
 
 # ---- 模型与运行时（体积大，由使用者自行下载）----
 # 只挡根目录和 scripts 下的模型，别写成 `models/` —— 那会把 docplat/models/ 这个
